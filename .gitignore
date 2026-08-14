@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Checkpoints and large archives -- never committed.
+# GitHub hard-blocks files over 100 MB. None of this is needed to reproduce a
+# figure: every required CSV is in data/.
+*.pt
+*.pth
+ckpt_*/
+*.zip
+
+# Logs
+*.log

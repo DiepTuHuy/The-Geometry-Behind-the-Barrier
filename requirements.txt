@@ -1,0 +1,20 @@
+# Full environment: training + measurement + plotting.
+#
+# Only needed to RE-RUN the measurements (GPU, days of compute). To reproduce
+# the figures alone, use the much lighter requirements-figures.txt instead.
+#
+# Python 3.10. torch >= 2.0 is required: the measurement code uses torch.func
+# (functional_call / jvp / vjp / jacrev), unavailable in earlier versions.
+# Every measurement falls back to CPU if CUDA is absent (slowly).
+
+# measurement and training
+torch==2.11.0
+torchvision==0.26.0      # only used to fetch MNIST / FashionMNIST
+
+# numerics
+numpy==2.2.6
+scipy==1.15.3            # linear_sum_assignment -- permutation alignment
+pandas==2.3.3
+
+# plotting
+matplotlib==3.10.8       # mpl_toolkits (used by fig0 / fig7) ships with it

@@ -1,0 +1,11 @@
+# Enough to reproduce every figure in the paper.
+#
+# No torch, no GPU, no dataset download required -- all CSVs are committed.
+#     pip install -r requirements-figures.txt
+#     bash figures/make_all.sh
+#
+# Versions below are the ones used to produce the figures in the paper.
+matplotlib==3.10.8
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.15.3
