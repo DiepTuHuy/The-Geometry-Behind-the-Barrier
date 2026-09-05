@@ -17,4 +17,4 @@ scipy==1.15.3            # linear_sum_assignment -- permutation alignment
 pandas==2.3.3
 
 # plotting
-matplotlib==3.10.8       # mpl_toolkits (used by fig0 / fig7) ships with it
+matplotlib==3.10.8       # mpl_toolkits (used by the schematic figures) ships with it

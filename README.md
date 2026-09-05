@@ -20,15 +20,17 @@ download, no `torch`.
 
 ```bash
 pip install -r requirements-figures.txt
-bash figures/make_all.sh
+bash scripts/make_all.sh
 ```
 
-Runs in seconds. Output appears in `figures/out/` — `.pdf` for the paper, `.png` for
-slides. Each script also prints a ready-to-paste LaTeX `\caption{...}`, so the numbers
-in a caption can never drift from the numbers in its figure.
+Runs in seconds. Output appears in `figures/main/` (the six main-text figures) and
+`figures/appendix/` (the nine appendix figures) — `.pdf` for the paper, `.png` where a
+raster is useful. Each script also prints the measured numbers it plotted, so a number
+quoted in the text can be checked against the figure that carries it.
 
-*Verified: all ten plotting scripts complete with `import torch` blocked (10/10), and
-two consecutive runs produce byte-identical output.*
+*Verified: all fifteen figure scripts run from the committed CSVs alone, with no GPU,
+no `torch` and no dataset download, and reproduce every PDF and PNG committed under
+`figures/` byte for byte.*
 
 Re-running the **measurements** needs a GPU and days of compute — see
 [docs/RUNBOOK.md](docs/RUNBOOK.md).
@@ -37,19 +39,21 @@ Re-running the **measurements** needs a GPU and days of compute — see
 
 ## Main result
 
-`figures/fig2_exponent_scatter.py` regresses the barrier exponent `α_B` on four
+`scripts/figp5_length_predicts.py` regresses the barrier exponent `α_B` on two
 candidate predictors across **n = 36 cells** (3 architectures × 3 regimes × 4 smooth
 activations):
 
 | Predictor | Quantity | R² |
 |---|---|---:|
-| `α_∂F` | metric flattening | 0.20 |
-| `α_dev_rel` | geodesic deviation | 0.11 |
-| `α_Δ̂ᵀFΔ̂` | Rayleigh quotient (direction only) | 0.02 |
-| **`α_ΔᵀFΔ`** | **Fisher length** | **0.91** |
+| `α_Δ̂ᵀFΔ̂` | Rayleigh quotient (direction only) | 0.03 |
+| **`α_ΔᵀFΔ`** | **Fisher length** | **0.90** |
 
-Only **Fisher length** predicts how the barrier scales with width. Reproduce with
-`python3 figures/fig2_exponent_scatter.py` — it prints exactly these numbers.
+Only **Fisher length** predicts how the barrier scales with width — direction alone
+does not. Reproduce with `python3 scripts/figp5_length_predicts.py`; it prints
+`n cells = 36 | Fisher length R2 = 0.904, slope = 1.13 | Rayleigh R2 = 0.026`.
+
+The companion claim — the barrier grows while the metric flattens — is
+`scripts/figp1_paradox.py`, which prints the measured `α_B` and `α_∂F` per regime.
 
 ---
 
@@ -68,41 +72,62 @@ data/                      all measured results, committed
   train/                   per-shard and combined training CSVs
   geodesic/                measurement round 1
   final/                   measurement round 2 + damping sweep
+  regrid/                  barrier re-measured on a 401-point grid (App. E.1 check)
 
-figures/                   one script per figure; READS CSV ONLY, never measures
-  style.py                 shared rcParams, palette, markers
-  common.py                the single CSV map (PATHS) + shared plotting helpers
-  fig*.py                  fig<N> ↔ out/fig<N>*.pdf ↔ \includegraphics{fig<N>*}
+scripts/                   one script per figure; READS CSV ONLY, never measures
+  fig_style.py             shared rcParams, palette, markers, physical figure size
+  fig_data.py              the single CSV map (PATHS) + the conventions applied once
+  fig_schematic.py         drawing primitives shared by the schematic figures
+  figp<N>_*.py             main text   -> figures/main/figp<N>_*.pdf
+  fig{B,C,D,E,F,R}_*.py    appendix    -> figures/appendix/*.pdf
   make_all.sh              one command, every figure
-  out/                     generated .pdf and .png
+
+figures/                   generated .pdf and .png -- exactly what the paper includes
+  main/                    the six main-text figures
+  appendix/                the nine appendix figures
 
 docs/                      runbook, configuration snapshot, data dictionary
 tools/                     read-only helpers (no GPU, no torch)
 ```
 
 **The layering is strict.** Training writes checkpoints; measurement reads checkpoints
-and writes CSV; plotting reads CSV and writes PDF. Nothing in `figures/` ever trains or
+and writes CSV; plotting reads CSV and writes PDF. Nothing in `scripts/` ever trains or
 re-measures, which is why the figures reproduce in seconds on any machine.
 
 ---
 
 ## Figure → script → data
 
+Main text (`figures/main/`):
+
 | Figure | Script | Reads |
 |---|---|---|
-| 1 | `figures/fig0_geometry_schematic.py` | *(none — loss field, metric and geodesic are computed)* |
-| 2 | `figures/fig1_barrier_dF.py` | `data/train/{mlp,cnn,ts}_combined.csv` |
-| 3 | `figures/fig2_exponent_scatter.py` | `data/train/*_combined.csv` + `data/geodesic/*_cells.csv` |
-| 4 | `figures/fig3_rho_star.py` | `data/final/{mode}_pairs.csv` |
-| 5 | `figures/fig4_rho_gate.py` | `data/train/*` + `data/geodesic/*_pairs.csv` + `data/final/*_cells.csv` |
-| 6 | `figures/fig5_path_profile.py` | `data/geodesic/{mode}_pairs.csv` |
-| 7 | `figures/fig6_deviation.py` | `data/geodesic/{mode}_cells.csv` |
-| — | `figures/fig7_three_spaces.py` | *(none — schematic for Eq. (4))* |
-| A1 | `figures/figA1_decompose.py` | `data/final/decompose_mlp.csv` |
-| A2 | `figures/figA2_by_activation.py` | `data/train/*_combined.csv` |
+| 1 | `scripts/figp1_paradox.py` | `data/final/*_pairs.csv` + `data/train/*_combined.csv` |
+| 2 | `scripts/figp2_deviation.py` | `data/geodesic/*_pairs.csv` |
+| 3 | `scripts/figp3_rayleigh.py` | `data/geodesic/*_pairs.csv` |
+| 4 | `scripts/figp4_regime_barrier.py` | `data/final/*_pairs.csv` |
+| 5 | `scripts/figp5_length_predicts.py` | `data/final/*_pairs.csv` + `data/geodesic/*_pairs.csv` |
+| 6 | `scripts/figp6_regime_uncertainty.py` | `data/final/*_pairs.csv` |
+
+Appendix (`figures/appendix/`):
+
+| Figure | Script | Reads |
+|---|---|---|
+| roadmap | `scripts/figR_roadmap.py` | *(none — schematic)* |
+| B.2 | `scripts/figB_scaling.py` | `data/final/*_pairs.csv` |
+| C.4–C.5 | `scripts/figC_geodesic.py` | `data/final/*_pairs.csv` + `data/train/*_combined.csv` |
+| D.1 | `scripts/fig_counterexample_D.py` | *(none — closed-form counterexample)* |
+| D.2 | `scripts/figD_vacuous.py` | `data/final/*_pairs.csv` + `data/geodesic/*_pairs.csv` |
+| E.1 | `scripts/figE_pipeline.py` | *(none — schematic)* |
+| E | `scripts/figE_gridcheck.py` | `data/regrid/summary.csv` |
+| F.1 | `scripts/figF_exponents.py` | `data/final/*` + `data/geodesic/*` + `data/train/*` |
+| F.7 | `scripts/figF_within.py` | via `figp5_length_predicts.measured_cells()` |
 
 No plotting script hardcodes a path. The complete CSV map is the `PATHS` dictionary at
-the top of [`figures/common.py`](figures/common.py) — move the data, edit one block.
+the top of [`scripts/fig_data.py`](scripts/fig_data.py) — move the data, edit one block.
+`data/regrid/` is the only exception: it is read directly by `figE_gridcheck.py`, which
+is the one figure that is a convergence check on the quadrature grid rather than a plot
+of the main measurement.
 
 ---
 

@@ -6,7 +6,7 @@ them and never calls back down.
 ```
   Layer 1   train        GPU, days     ->  ckpt_*/  (*.pt, not in this repo)
   Layer 2   measure      GPU, hours    ->  data/**/*.csv
-  Layer 3   plot         CPU, seconds  ->  figures/out/*.pdf
+  Layer 3   plot         CPU, seconds  ->  figures/{main,appendix}/*.pdf
 ```
 
 **To reproduce the figures, skip layers 1 and 2.** Every CSV they produce is already
@@ -14,7 +14,7 @@ committed.
 
 ```bash
 pip install -r requirements-figures.txt
-bash figures/make_all.sh
+bash scripts/make_all.sh
 ```
 
 ---
@@ -171,11 +171,12 @@ above 1% means the configuration differs and is reported. Disable with `ANCHOR=0
 ## Layer 3 — Figures
 
 ```bash
-bash figures/make_all.sh
+bash scripts/make_all.sh
 ```
 
-Seconds, no GPU, no torch, no dataset — verified by re-running all ten scripts with
-`import torch` blocked (10/10 pass). Two consecutive runs give byte-identical output.
+Seconds, no GPU, no torch, no dataset. All fifteen figure scripts run from the
+committed CSVs alone, and re-running them reproduces every PDF and PNG committed
+under `figures/` byte for byte.
 
 ---
 

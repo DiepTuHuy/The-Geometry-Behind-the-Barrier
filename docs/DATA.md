@@ -83,9 +83,10 @@ Per-cell aggregate plus fitted exponents. 26 columns, 105 rows. Source for Figur
 | `alpha_devrel2` + `_r2` | width exponent of the ‖Δ‖²-normalised deviation |
 | `alpha_flen` + `_r2` | width exponent of Fisher length |
 
-> **Two deviation columns exist; only one is used.** Figure 3 uses `dev_rel`
-> (normalised by ‖Δ‖), giving **R² = 0.11**. This choice is stated at the top of
-> `figures/fig2_exponent_scatter.py` and matches the comment in the λ-sweep scripts.
+> **Two deviation columns exist; only one is used.** The figures use `dev_rel`
+> (normalised by ‖Δ‖). That choice is applied in
+> `scripts/figp2_deviation.py` / `scripts/figF_exponents.py`, and matches the
+> comment in the λ-sweep scripts.
 > `dev_rel2_med` / `alpha_devrel2` (normalised by ‖Δ‖²) is used by **no figure** —
 > retained for comparison only. Do not cite it by accident.
 
