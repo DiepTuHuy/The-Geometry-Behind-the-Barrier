@@ -188,3 +188,47 @@ python3 tools/check_config.py --strict
 
 Parses all 30+ experiment scripts and exits non-zero if a hyperparameter drifts between
 files that are supposed to match. Read-only.
+
+---
+
+## 07 — Uncertainty sweep (de-confounding rho* from the regime)
+
+`src/07_uncertainty/mlp_uncertainty_sweep.py`
+
+**Why.** The paper's summary claim has two clauses; the released grid tests only
+one of them. `rho*` at the endpoint anchor is `[0.203, 0.615]` in every NTK-lazy
+cell and `[0.000, 0.104]` in every feature-learning cell — the ranges are
+disjoint — so "controlled predictive uncertainty" and "not NTK-lazy" are the
+same variable, and inside the 24 feature-learning cells the residual `rho*`
+explains none of the barrier exponent (`R^2 = 0.000`, `p = 0.99`). This run
+moves `rho*` **within** a fixed parameterisation, using label smoothing, so the
+two can be told apart.
+
+**Kaggle.** Single file, no repo imports; writes to `/kaggle/working`.
+
+```
+!python mlp_uncertainty_sweep.py            # ~2 h on a T4 with the defaults
+PAIRS=3 python mlp_uncertainty_sweep.py     # quick first pass
+```
+
+Set `SMOKE = True` at the top for a 30-second end-to-end check (validated on
+CPU). The CSV is resumable: a session that is cut off continues where it
+stopped, so the run can be split across sessions.
+
+**Grid (defaults).** `regime ∈ {mup, sp}` × `act = gelu` ×
+`width ∈ {64, 256, 1024, 4096}` × `eps ∈ {0, 0.05, 0.10, 0.20, 0.40}` × 5 seeds
+= 200 trainings, 40 cells, 10 pairs each. Trim `WIDTHS` or `EPS_LIST` first if
+the session is tight.
+
+**Built-in cross-check.** `eps = 0` reproduces released cells: its `B` and
+`rho_A` should match `param_final_mlp.csv` at the same `(regime, act, width)`.
+Verify that column before trusting the rest.
+
+**Known limitation, stated in the file.** Label smoothing is not a
+`rho*`-only knob — it moves the minimum, so the Fisher length moves too (smoke
+run, muP/w64: `eps` 0→0.2 sends `rho_A` 0.024→0.235 *and* `flen_A` 0.34→2.68).
+The analysis must therefore regress the barrier exponent on **both**
+`alpha_flen` and `rho*`; the 4×5 width×eps grid exists to give the two enough
+independent variation for that regression to separate them.
+
+**Output.** `param_uncert_mlp.csv` (per pair), `uncert_mlp_cell.csv` (per cell).

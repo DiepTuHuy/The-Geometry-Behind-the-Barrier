@@ -46,12 +46,21 @@ if SMOKE:
 else:
     REGIMES= ["ntk","sp","mup"]
     ACTS   = ["relu","gelu","tanh","swish","softplus"]     # 5 ham
-    WIDTHS = [1,2,4,8]         # <<< v2: bo 16,32 (qua dat — ca tuan compute); mo rong sau bang session rieng WIDTHS=[16] neu can
+    WIDTHS = [16]              # <<< v3: mo rong luoi. 1,2,4,8 da chay xong o v2
+                               # (ckpt giu nguyen, khong train lai); 16 -> n=64*16=1024.
+                               # Muon toi n=2048 thi doi thanh [16,32] -- ton them ~4x.
     NSEEDS = 5; EPOCHS = 100; LR = 0.1              # SGD dong nhat; v2 them warmup+clip AP DONG DEU (bai hoc TS v1: SP no dau run o width lon)
     WARMUP_EPOCHS = 8; CLIP_NORM = 1.0
     T_GRID=21; MATCH_ITERS=8; BATCH=256; N_EVAL=5000
     DF_ENABLE=True; DF_ACTS=["gelu","tanh","swish","softplus"]; DF_BATCH=2048; DF_MICRO=64; DF_ITERS=20; DF_NZ=5
     DF_EPS=3e-3; DF_RICHARDSON=True
+
+# Seed derivation must not depend on WHICH widths this session runs.  The old
+# formula indexed the live WIDTHS list, so a session running only w=16 would
+# hand it index 0 -- exactly the seed w=1 already used.  Indexing a fixed
+# canonical grid instead keeps 1,2,4,8 on the seeds that produced the released
+# data, and gives 16 (and later 32) a fresh one.
+WIDTH_SEED_ORDER = [1, 2, 4, 8, 16, 32]
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 def log(*a): print(f"[{time.strftime('%H:%M:%S')}]", *a, flush=True)
@@ -333,7 +342,7 @@ def main():
                         except TypeError: d=torch.load(cp,map_location="cpu")
                         sds.append(d["sd"]); accs.append(d["acc"]); dfs.append(d.get("dF")); wmvs.append(d.get("wmove")); log(f"  s{sd_i}: NAP ckpt acc={d['acc']:.3f}")
                     else:
-                        set_seed(SEED_BASE+REGIMES.index(regime)*100000+WIDTHS.index(w)*100+ACTS.index(act)*7+sd_i)
+                        set_seed(SEED_BASE+REGIMES.index(regime)*100000+WIDTH_SEED_ORDER.index(w)*100+ACTS.index(act)*7+sd_i)
                         m,wmove=train(MLP(w,act,regime),Xtr,Ytr,EPOCHS); a=acc_of(m,Xte,Yte)
                         dF=None
                         if df_here:

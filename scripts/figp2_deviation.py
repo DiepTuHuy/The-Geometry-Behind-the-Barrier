@@ -33,7 +33,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from fig_style import (apply_style, despine, label_at, log_width_axis,
+from fig_style import (apply_style, despine, legend_table, log_width_axis,
                        panel_letter, save, C, REGIMES, REGIME_LABEL,
                        ARCH_COLORS, ARCH_LABEL, ARCH_MARKERS, WIDTHS)
 from fig_data import load_pairs, by_width, powerlaw_fit
@@ -69,47 +69,53 @@ def main():
 
     # ---- (a) NTK-lazy, three architectures -------------------------------
     tab = by_width(geo[geo["regime"] == "NTK"], "dev_rel", keys=("arch",))
-    for arch, dx, dy, ha in (("MLP", 6, 0, "left"),
-                             ("TS", 6, 0, "left"),
-                             ("CNN", -5, -10, "right")):
+    rows_a = []
+    for arch in ("MLP", "TS", "CNN"):
+        style = dict(color=ARCH_COLORS[arch], ls=ARCH_LS[arch],
+                     marker=ARCH_MARKERS[arch], lw=ARCH_LW[arch], ms=3.8)
         x, y, e, _ = curve(ax_a, tab[tab["arch"] == arch], ARCH_COLORS[arch],
                            ARCH_LS[arch], ARCH_MARKERS[arch], ARCH_LW[arch], 3.8)
-        label_at(ax_a, x[-1], y[-1],
-                 rf"{ARCH_LABEL[arch]}  $n^{{-{e:.2f}}}$",
-                 ARCH_COLORS[arch], dx=dx, dy=dy, fontsize=6.9, ha=ha)
-    ax_a.text(0.035, 0.055, "all three: NTK-lazy", transform=ax_a.transAxes,
-              fontsize=6.9, color=C["ink"], ha="left", va="bottom",
-              weight="bold")
-    ax_a.set_ylim(4.4e-2, 2.3)
+        rows_a.append((style, ARCH_LABEL[arch], rf"$n^{{-{e:.2f}}}$"))
+    # Headroom above the data is deliberate: it is the band the key occupies,
+    # so the table never covers a curve.  Every series starts at 1.0 by
+    # construction (each is normalised by its own smallest width), so the space
+    # above 1.0 carries no data in any panel of this figure.
+    ax_a.set_ylim(4.4e-2, 7.0)
     ax_a.set_ylabel(r"relative deviation $D_{\mathrm{rel}}$")
 
     # ---- (b) MLP, three parameterisations --------------------------------
     tabm = by_width(geo[geo["arch"] == "MLP"], "dev_rel", keys=("regime",))
-    fits = {}
+    fits, rows_b = {}, []
     for regime in REGIMES:
         ls, marker = REG_STYLE[regime]
         x, y, e, r2 = curve(ax_b, tabm[tabm["regime"] == regime], C[regime],
                             ls, marker)
         fits[regime] = (x[-1], y[-1], e, r2)
-    ax_b.axhline(1.0, color=C["ref"], ls=":", lw=0.8, zorder=1)
-    for regime, dy in (("NTK", -4), ("Standard", 4), ("muP", 0)):
-        xe, ye, e, r2 = fits[regime]
         tag = "no power law" if r2 < 0.5 else rf"$n^{{-{e:.2f}}}$"
-        label_at(ax_b, xe, ye, f"{REGIME_LABEL[regime]}  {tag}", C[regime],
-                 dx=6, dy=dy, fontsize=6.9)
-    ax_b.text(0.035, 0.055, "all three: MLP / MNIST", transform=ax_b.transAxes,
-              fontsize=6.9, color=C["ink"], ha="left", va="bottom",
-              weight="bold")
-    ax_b.set_ylim(6e-2, 3.4)
+        rows_b.append((dict(color=C[regime], ls=ls, marker=marker, lw=1.7,
+                            ms=3.6), REGIME_LABEL[regime], tag))
+    ax_b.axhline(1.0, color=C["ref"], ls=":", lw=0.8, zorder=1)
+    ax_b.set_ylim(6e-2, 11.0)
 
     for ax in (ax_a, ax_b):
         ax.set_yscale("log")
         log_width_axis(ax)
-        ax.set_xlim(WIDTHS[0] * 0.88, WIDTHS[-1] * 8.6)
+        # The old right margin (8.6x the widest point) existed only to host the
+        # end-of-line labels; with the key in a table the axis can end where the
+        # data ends.
+        ax.set_xlim(WIDTHS[0] * 0.88, WIDTHS[-1] * 1.16)
         ax.set_xlabel("width $n$")
         despine(ax)
     panel_letter(ax_a, "a", dx=-0.08)
     panel_letter(ax_b, "b", dx=-0.05)
+
+    # The shared condition becomes the table's title, so each panel states in
+    # one place what is held fixed and what varies down the rows.
+    # Placement is per panel, into the corner that panel's own curves leave
+    # empty: (a) descends throughout, so the top right is clear; (b) has the
+    # Standard curve turning back up at the right, so the key goes top left.
+    legend_table(ax_a, rows_a, loc="upper right", title="all three: NTK-lazy")
+    legend_table(ax_b, rows_b, loc="upper left", title="all three: MLP / MNIST")
 
     save(fig, OUT, "figp2_deviation")
     print("  (a) NTK by arch:", {a: round(powerlaw_fit(

@@ -57,7 +57,7 @@ RUN_TAG    = {"mlp":"pmlp_v2","cnn":"pcnn_v2","ts":"pts_v2"}[MODE]
 PHASE      = os.environ.get("PHASE", "all")   # rho | full | all
 
 WIDTHS   = {"mlp":[64,128,256,512,1024,2048,4096],
-            "cnn":[1,2,4,8],
+            "cnn":[1,2,4,8,16],
             "ts" :[64,128,256,512,1024,2048,4096]}[MODE]
 ACTS     = ["gelu","tanh","swish","softplus"]      # C^3, dong nhat geo script
 REGIMES  = ["ntk","sp","mup"]

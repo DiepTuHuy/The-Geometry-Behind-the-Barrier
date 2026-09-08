@@ -73,7 +73,7 @@ if SMOKE:
     GEO_WIDTHS={"mlp":[16,32],"cnn":[1,2],"ts":[16,32]}[MODE]
     GEO_ACTS=["gelu","tanh"]; GEO_PAIRS=1; GEO_TGRID=5; GEO_BATCH=128; GEO_MICRO=64; NSEEDS=2; CG_ITERS=60; POWER_ITERS=12
 else:
-    GEO_WIDTHS={"mlp":[64,128,256,512,1024,2048,4096],"cnn":[1,2,4,8],"ts":[64,128,256,512,1024,2048,4096]}[MODE]
+    GEO_WIDTHS={"mlp":[64,128,256,512,1024,2048,4096],"cnn":[1,2,4,8,16],"ts":[64,128,256,512,1024,2048,4096]}[MODE]
     GEO_ACTS=["gelu","tanh","swish","softplus"]      # C^3: KHONG relu (kink) — dong nhat DF_ACTS
     GEO_PAIRS=10                # = combinations(5,2): DONG NHAT voi barrier
     GEO_TGRID=9                 # Green quadrature (integrand tron)

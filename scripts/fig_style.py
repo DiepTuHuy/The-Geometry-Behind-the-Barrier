@@ -12,17 +12,40 @@ Design rules implemented here (from the figure-design literature):
 
   R1  One figure, one message; the takeaway is annotated on the plot,
       not hidden in the caption (Rougier et al. 2014, Rules 1-3).
-  R2  Direct labelling at line ends instead of detached legends
-      (Cleveland & McGill 1984; Tufte 1983 - "data-ink ratio").
+  R2  Every series is keyed in a TABLE drawn inside the panel: one row per
+      series, columns [line sample | name | fitted exponent].  This replaces
+      the direct end-of-line labelling the figures used previously.
+
+      The trade is deliberate and worth stating, because the earlier choice
+      was not arbitrary.  Direct labelling (Cleveland & McGill 1984; Tufte
+      1983, "data-ink ratio") removes the eye's round trip between a detached
+      key and the curve, and it is the better default when each series carries
+      one short name.  Here each series carries a name AND a fitted exponent,
+      and once a third column exists the end-of-line form stops being a label
+      and becomes a ragged block of text hanging off the right margin -- it
+      forced a wide right-hand x-margin in every panel, it could not be
+      aligned across series, and in figp4 it ran off the saved page entirely.
+      A table puts the exponents in a column, which is the one arrangement
+      that lets a reader compare them, and it hands the margin back to the
+      data.  The cost is the round trip, and it is paid down by keeping the
+      table inside the panel next to the curves rather than outside it.
+
+      `label_at` is kept below: figD1-figD5 still use it, and it remains the
+      right tool for a one-off pointer that names no quantity.
   R3  Colorblind-safe Okabe-Ito palette, with a SEMANTIC mapping that is
       IDENTICAL across every figure of the paper:
           NTK-lazy  -> blue       (#0072B2)
           Standard  -> sky blue   (#56B4E9)
           muP       -> vermillion (#D55E00)
       (Okabe & Ito 2008; Wong, Nature Methods Points of View 2011.)
-  R4  No chartjunk: top/right spines removed, horizontal-only gridlines
-      on a very light neutral panel tint (white gridlines) for clean
-      figure-ground separation (Tufte 1983; Few 2011 chartjunk debate).
+  R4  A full four-sided frame around each panel, with horizontal-only
+      gridlines on a very light neutral panel tint (white gridlines) for
+      clean figure-ground separation (Tufte 1983; Few 2011 chartjunk debate).
+      Tufte would call the closing two spines chartjunk; the counter-argument
+      that decides it here is that these panels carry a tinted plotting
+      region, and a tint bounded on two sides only reads as an unfinished
+      shape rather than as a panel.  Closing the frame also gives the
+      in-panel key (R2) an edge to sit against.
   R5  Fonts match the LaTeX Times text: STIX serif at true physical size
       (8 pt) because every figure is saved at exactly the width it is
       \\includegraphics'd at (Rougier et al. 2014, Rule 8).
@@ -141,12 +164,18 @@ def apply_style() -> None:
 
 
 def despine(ax, keep_left: bool = True) -> None:
-    """R4: remove top/right spines; keep quiet left/bottom spines."""
-    ax.spines[["top", "right"]].set_visible(False)
-    if not keep_left:
-        ax.spines["left"].set_visible(False)
-    ax.spines["left"].set_color("#4d4d4d")
-    ax.spines["bottom"].set_color("#4d4d4d")
+    """R4: close the frame on all four sides, in one quiet grey.
+
+    The name is now a misnomer -- it removed the top/right spines when the
+    figures followed the open-axes convention -- but every figure script calls
+    it, and renaming it would touch a dozen files to say the same thing.  The
+    `keep_left` argument is likewise retained so no existing call breaks; no
+    script passes it, and a four-sided frame has no use for it.
+    """
+    for side in ("top", "right", "bottom", "left"):
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_color("#4d4d4d")
+        ax.spines[side].set_linewidth(0.7)
     # R4: horizontal-only grid
     ax.grid(axis="y")
     ax.grid(axis="x", visible=False)
@@ -193,6 +222,132 @@ def label_at(ax, x, y, text, color, dx=5.0, dy=0.0, fontsize=7.5,
                 weight=weight, annotation_clip=False)
 
 
+# ----------------------------------------------------------------------
+# R2: the in-panel key, drawn as a table
+# ----------------------------------------------------------------------
+_TABLE_CORNER = {"upper right": (1.0, 1.0), "upper left": (0.0, 1.0),
+                 "lower right": (1.0, 0.0), "lower left": (0.0, 0.0)}
+
+
+def _axes_text_size(ax, s, fontsize, weight="normal"):
+    """Size of `s` as drawn on `ax`, in axes-fraction units.
+
+    Measured rather than estimated, because the third column holds mathtext
+    exponents whose width no character count predicts."""
+    renderer = ax.figure.canvas.get_renderer()
+    probe = ax.text(0.0, 0.0, s, transform=ax.transAxes, fontsize=fontsize,
+                    weight=weight)
+    bb = probe.get_window_extent(renderer=renderer)
+    probe.remove()
+    (x0, y0), (x1, y1) = ax.transAxes.inverted().transform(
+        [(0.0, 0.0), (bb.width, bb.height)])
+    return x1 - x0, y1 - y0
+
+
+def legend_table(ax, rows, loc="upper right", title=None, fontsize=6.6,
+                 margin=0.030, pad=0.028, gap=0.038, sample=0.10,
+                 facecolor="white", alpha=0.90, zorder=20):
+    """R2: draw this panel's key as a table -- sample | name | value.
+
+    `rows` is a sequence of ``(style, name, value)``:
+
+        style   a dict of Line2D properties (color, ls, marker, lw, ms).  Pass
+                the same dict the curve was drawn with, so the key cannot
+                drift away from the plot it describes.
+        name    the series name; mathtext allowed.
+        value   the fitted quantity for that series, or None to leave the
+                third column empty for that row.
+
+    Column widths come from the rendered text (`_axes_text_size`), so the
+    three columns line up whatever the labels say and however long an exponent
+    prints.  Everything is placed in axes fractions, so the table travels with
+    the panel and not with the data -- rescaling an axis cannot strand it, and
+    a caller may therefore set `ylim` after calling this.
+
+    Returns the table's ``(x0, y0, w, h)`` in axes fractions, so a caller that
+    needs to keep a curve clear of it can query where it landed."""
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Rectangle
+
+    ax.figure.canvas.draw()   # a renderer must exist before text can be measured
+
+    names = [r[1] for r in rows]
+    values = [r[2] for r in rows]
+    has_value = any(v is not None for v in values)
+
+    name_w = max(_axes_text_size(ax, n, fontsize, "bold")[0] for n in names)
+    line_h = max(_axes_text_size(ax, n, fontsize, "bold")[1] for n in names)
+    val_w = max([_axes_text_size(ax, v, fontsize)[0]
+                 for v in values if v is not None], default=0.0)
+    row_h = 1.42 * line_h
+
+    inner_w = sample + gap + name_w + (gap + val_w if has_value else 0.0)
+    title_h = 0.0
+    if title is not None:
+        title_w, th = _axes_text_size(ax, title, fontsize, "bold")
+        inner_w = max(inner_w, title_w)
+        title_h = 1.62 * th
+
+    w = inner_w + 2 * pad
+    h = len(rows) * row_h + title_h + 2 * pad
+
+    corner_x, corner_y = _TABLE_CORNER[loc]
+    x0 = margin if corner_x == 0.0 else 1.0 - margin - w
+    y0 = margin if corner_y == 0.0 else 1.0 - margin - h
+
+    ax.add_artist(Rectangle((x0, y0), w, h, transform=ax.transAxes,
+                            facecolor=facecolor, alpha=alpha,
+                            edgecolor="#c8c8c8", linewidth=0.6,
+                            zorder=zorder, clip_on=False))
+
+    cursor = y0 + h - pad
+    if title is not None:
+        ax.text(x0 + pad, cursor - 0.5 * title_h, title,
+                transform=ax.transAxes, fontsize=fontsize, weight="bold",
+                color=C["ink"], ha="left", va="center", zorder=zorder + 2)
+        cursor -= title_h
+        ax.add_artist(Line2D([x0 + pad, x0 + w - pad], [cursor, cursor],
+                             transform=ax.transAxes, color="#c8c8c8",
+                             linewidth=0.6, zorder=zorder + 1, clip_on=False))
+
+    x_sample = x0 + pad
+    x_name = x_sample + sample + gap
+    x_value = x0 + w - pad
+    for i, (style, name, value) in enumerate(rows):
+        yc = cursor - (i + 0.5) * row_h
+        spec = dict(style)
+        colour = spec.pop("color", C["ink"])
+        marker = spec.pop("marker", None)
+        ax.add_artist(Line2D([x_sample, x_sample + 0.5 * sample,
+                              x_sample + sample], [yc] * 3,
+                             transform=ax.transAxes, color=colour,
+                             marker=marker, markevery=[1],
+                             markerfacecolor=colour, markeredgecolor="white",
+                             markeredgewidth=0.5, zorder=zorder + 2,
+                             clip_on=False, **spec))
+        ax.text(x_name, yc, name, transform=ax.transAxes, fontsize=fontsize,
+                color=colour, ha="left", va="center", weight="bold",
+                zorder=zorder + 2)
+        if value is not None:
+            ax.text(x_value, yc, value, transform=ax.transAxes,
+                    fontsize=fontsize, color=colour, ha="right", va="center",
+                    zorder=zorder + 2)
+    return x0, y0, w, h
+
+
+def headroom_for(lo, hi, table_h, margin=0.030, gap=0.035):
+    """Top `ylim` that leaves a key of height `table_h` clear of the data.
+
+    On a log axis the data's top sits at a fixed fraction of the panel; this
+    returns the `ymax` that puts that fraction just under the table's bottom
+    edge.  `table_h` is the third element of what `legend_table` returned, so
+    the room made is the room actually needed rather than a guessed constant.
+    """
+    frac = 1.0 - margin - table_h - gap
+    lo_l, hi_l = np.log10(lo), np.log10(hi)
+    return 10.0 ** (lo_l + (hi_l - lo_l) / frac)
+
+
 
 # Hairline kept between the drawn content and the page edge, so a stroke on the
 # outermost artist is never shaved off by the crop.
@@ -220,6 +375,31 @@ def _fit_width(fig, target_w_in, rounds=4):
         new_left = min(max(sp.left - left_gap, 0.0), 0.9)
         new_right = min(max(sp.right + right_gap, new_left + 0.05), 1.0)
         fig.subplots_adjust(left=new_left, right=new_right)
+
+
+def settle(fig):
+    """Run save()'s axes-widening pass early and redraw.
+
+    Any artist whose orientation is measured off the axes -- a label rotated to
+    lie along a data line, say -- has to be positioned against the FINAL axes
+    box.  `save` widens the axes as its first step, which moves that box, so a
+    rotation computed before then is wrong by however much the widening moved
+    things.  Call this first, place the artist, then call `save`: by then the
+    content already fills the canvas, so `save` leaves the geometry alone."""
+    _fit_width(fig, fig.get_size_inches()[0])
+    fig.canvas.draw()
+
+
+def data_angle(ax, p0, p1):
+    """Screen angle in degrees of the data segment p0 -> p1.
+
+    On a log--log panel whose two axes span different numbers of decades, the
+    line y = x is NOT at 45 degrees on the page, and a label rotated by a
+    hand-written angle drifts away from the line it annotates.  This measures
+    the angle the reader actually sees.  Valid only once the axes box is
+    final -- see `settle`."""
+    (x0, y0), (x1, y1) = ax.transData.transform([p0, p1])
+    return float(np.degrees(np.arctan2(y1 - y0, x1 - x0)))
 
 
 def save(fig, out_dir, name):

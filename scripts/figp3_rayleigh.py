@@ -11,7 +11,8 @@ caption claimed decay is "steep in every parameterisation".  On the plotted
 architecture that is not true at large width: the Standard MLP SATURATES from
 n = 1024 on (0.0082 -> 0.0070 -> 0.0070), so its fitted exponent comes entirely
 from the first half of the grid, and its R^2 = 0.87 is the lowest of the nine
-cells while the other eight are >= 0.99.  Panel (b) shows the saturation is a
+cells while the other eight are >= 0.985 (the next lowest is the Standard
+teacher-student at 0.985; the remaining seven are >= 0.989).  Panel (b) shows the saturation is a
 property of that one cell and not of the Standard regime: the Standard
 teacher-student and CNN keep decaying across the whole grid.
 
@@ -32,7 +33,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from fig_style import (apply_style, despine, label_at, log_width_axis,
+from fig_style import (apply_style, despine, legend_table, log_width_axis,
                        panel_letter, save, C, REGIMES, REGIME_LABEL,
                        ARCH_COLORS, ARCH_LABEL, ARCH_MARKERS, WIDTHS)
 from fig_data import load_pairs, by_width, powerlaw_fit
@@ -66,51 +67,62 @@ def main():
 
     # ---- (a) MLP, three parameterisations --------------------------------
     tabm = by_width(geo[geo["arch"] == "MLP"], "rq_mid", keys=("regime",))
-    ends = {}
+    ends, rows_a = {}, []
     for regime in REGIMES:
         ls, marker = REG_STYLE[regime]
         x, y, e, r2 = curve(ax_a, tabm[tabm["regime"] == regime], C[regime],
                             ls, marker)
         ends[regime] = (x, y, e, r2)
-    for regime, dy in (("Standard", 0), ("NTK", 4), ("muP", -6)):
-        x, y, e, _ = ends[regime]
-        label_at(ax_a, x[-1], y[-1],
-                 rf"{REGIME_LABEL[regime]}  $n^{{-{e:.1f}}}$", C[regime],
-                 dx=6, dy=dy, fontsize=6.9)
-    # Mark the one place the power law runs out.
+        rows_a.append((dict(color=C[regime], ls=ls, marker=marker, lw=1.7,
+                            ms=3.4), REGIME_LABEL[regime],
+                       rf"$n^{{-{e:.1f}}}$"))
+    # Mark the one place the power law runs out.  Kept as an annotation rather
+    # than folded into the table: it is a caveat on one row, not a column the
+    # other two rows could fill.
+    #
+    # One word, not the former two lines.  Once the key became a table it took
+    # the top third of the panel, and the only gap left that clears both the
+    # NTK curve above and the muP curve below is about one line tall.  The
+    # numbers this used to carry ("from n=1024", "R^2=0.87, lowest of nine")
+    # moved into the caption; the plot keeps the pointer, which is the part
+    # prose cannot do.
     xs, ys, _, _ = ends["Standard"]
-    ax_a.annotate("saturates from $n=1024$\n($R^2=0.87$, lowest of nine)",
-                  xy=(xs[-2], ys[-2]), xytext=(0, 38),
+    ax_a.annotate("saturates", xy=(xs[-2], ys[-2]), xytext=(0, -13),
                   textcoords="offset points", fontsize=6.2,
-                  color=C["Standard"], ha="center", va="bottom",
+                  color=C["Standard"], ha="center", va="top",
                   arrowprops=dict(arrowstyle="-", color=C["Standard"],
                                   lw=0.7, shrinkA=1, shrinkB=2))
-    ax_a.text(0.035, 0.055, "all three: MLP / MNIST", transform=ax_a.transAxes,
-              fontsize=6.9, color=C["ink"], ha="left", va="bottom",
-              weight="bold")
-    ax_a.set_ylim(3.0e-5, 3.0)
+    # Headroom for the key.  Every curve is normalised to 1.0 at the smallest
+    # width, so nothing this figure measures lives above 1.0.
+    ax_a.set_ylim(3.0e-5, 60.0)
     ax_a.set_ylabel(r"Rayleigh quotient $\mathcal{R}_F$ (normalised)")
 
     # ---- (b) Standard regime, three architectures ------------------------
     tabs = by_width(geo[geo["regime"] == "Standard"], "rq_mid", keys=("arch",))
-    for arch, dy in (("MLP", 9), ("TS", -9), ("CNN", 0)):
+    rows_b = []
+    for arch in ("MLP", "TS", "CNN"):
         x, y, e, _ = curve(ax_b, tabs[tabs["arch"] == arch], ARCH_COLORS[arch],
                            ARCH_LS[arch], ARCH_MARKERS[arch], ms=3.6)
-        label_at(ax_b, x[-1], y[-1], rf"{ARCH_LABEL[arch]}  $n^{{-{e:.2f}}}$",
-                 ARCH_COLORS[arch], dx=6, dy=dy, fontsize=6.9)
-    ax_b.text(0.035, 0.055, "all three: Standard", transform=ax_b.transAxes,
-              fontsize=6.9, color=C["ink"], ha="left", va="bottom",
-              weight="bold")
-    ax_b.set_ylim(2.5e-3, 3.0)
+        rows_b.append((dict(color=ARCH_COLORS[arch], ls=ARCH_LS[arch],
+                            marker=ARCH_MARKERS[arch], lw=1.7, ms=3.6),
+                       ARCH_LABEL[arch], rf"$n^{{-{e:.2f}}}$"))
+    ax_b.set_ylim(2.5e-3, 9.0)
 
     for ax in (ax_a, ax_b):
         ax.set_yscale("log")
         log_width_axis(ax)
-        ax.set_xlim(WIDTHS[0] * 0.88, WIDTHS[-1] * 8.6)
+        # The old right margin (8.6x) hosted the end-of-line labels; the key is
+        # now a table inside the panel, so the axis ends where the data does.
+        ax.set_xlim(WIDTHS[0] * 0.88, WIDTHS[-1] * 1.16)
         ax.set_xlabel("width $n$")
         despine(ax)
     panel_letter(ax_a, "a", dx=-0.08)
     panel_letter(ax_b, "b", dx=-0.05)
+
+    # Both panels fall steeply left to right, so the top right corner of each
+    # is the region its own curves leave empty.
+    legend_table(ax_a, rows_a, loc="upper right", title="all three: MLP / MNIST")
+    legend_table(ax_b, rows_b, loc="upper right", title="all three: Standard")
 
     save(fig, OUT, "figp3_rayleigh")
     print("  (a) MLP by regime:", {r: round(v[2], 2) for r, v in ends.items()})
