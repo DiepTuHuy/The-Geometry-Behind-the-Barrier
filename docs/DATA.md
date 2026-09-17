@@ -137,6 +137,63 @@ The matching `*_pairs.csv` files hold the same sweep before aggregation.
 
 ---
 
+## `data/profile/mlp_length.csv`
+
+`R_F(t)` along the linear path, from `src/04_profile/measure_profile_length.py`.
+**84 cells** (3 regimes × 4 smooth activations × 7 widths), 840 seed pairs,
+`status = ok` on every row.
+
+Stored **wide**: one `rq_t0.000` … `rq_t1.000` column per grid point, 21 of them
+at steps of 0.05, plus `rq_min`, `rq_max`, `t_argmin`. `fig_data.load_profile_length`
+reshapes it to long form once, so no figure has to.
+
+This measurement predates `data/rayleigh/` and is the larger of the two profile
+runs; the newer one is 42 cells on a 9-point grid. They agree to `7e-05`. Note
+`t_argmin`: the minimum of `R_F(t)` sits at exactly `t = 0.50` in 347 of 840
+rows, and at an endpoint in 489 — the midpoint is a **local minimum of the
+path**, not a typical point of it.
+
+`mlp_length_cell.csv` is the per-cell median of the same.
+
+## `data/rayleigh/mlp_*.csv`
+
+Written by `src/10_rayleigh/measure_rayleigh.py`. MLP only so far; see
+`data/rayleigh/report_mlp.txt` for the run's own report, including the ANCHOR
+check against `data/geodesic/mlp_pairs.csv` (max relative deviation **7e-05** on
+`rq_A`/`rq_mid`/`rq_B`, so these are the same measurement the paper reports).
+
+`mlp_pairs.csv` — one row per seed pair. Quantities at `A` / `mid` / `B`:
+
+| Column | Meaning |
+|---|---|
+| `rq_*` | **Rayleigh quotient** `Δ̂'FΔ̂` |
+| `flen_*` | Fisher length `½‖Δ‖²·rq` |
+| `lmax_*` | largest eigenvalue of `F`, power iteration |
+| `trP_*`, `trP_sem_*` | `tr F / P` from unit-sphere probes, and its s.e.m. |
+| `align_*` | **alignment ratio** `rq / (tr F/P)` — 1 ⇔ indistinguishable from a random direction |
+| `spec_*` | `rq / λ_max` — position under the top of the spectrum |
+| `ov1_*`, `top1_*` | squared overlap of `Δ̂` with `u₁`, and the share of `rq` it carries |
+| `pow_gap_mid` | power-iteration convergence diagnostic; large ⇒ read `spec`/`ov1`/`top1` as bounds |
+
+`mlp_profile.csv` — long format, one row per (pair, `t`): `rq_t`, `flen_t` on a
+nine-point grid in `t`. This is what shows the midpoint dip.
+
+`mlp_anchor.csv` — one row per seed: `lmax`, `trP` at `w_s`.
+
+`mlp_cells.csv` — per-cell medians and fitted exponents.
+
+> **`*_med` versus `*_rat`.** A cell's aggregate of a RATIO is the ratio of the
+> aggregates, not the median of the per-pair ratios: the median does not commute
+> with division. `align_mid_med` is the median of the ratios — the right thing to
+> quote for a typical pair. `align_mid_rat = rq_mid_med / trP_mid_med` is what
+> `alpha_align` is fitted on, because only that makes
+> `alpha_rq = alpha_trP + alpha_align` exact. Measured difference: up to 0.032 on
+> `alpha_rq`, which is why `resid_rq` is now 0.000.
+
+`resid_flen` / `resid_rq` are **coverage warnings**, not physics: with consistent
+aggregation they are zero by construction, so a value large against a typical
+`alpha` (~1–2) means a width was dropped from one fit and not another.
+
 ## `data/train/cnn_remeasure_dF_audit.csv`
 
 12 columns, 83 rows. **Not experimental data — an audit log.**

@@ -55,6 +55,17 @@ PATHS = {
     "cells_final": "final/{}_cells.csv",
     "cells_geo":   "geodesic/{}_cells.csv",
     "train":       "train/{}_combined.csv",
+    "rq_pairs":    "rayleigh/{}_pairs.csv",
+    "rq_profile":  "rayleigh/{}_profile.csv",
+    "rq_cells":    "rayleigh/{}_cells.csv",
+    "profile_len": "profile/{}_length.csv",
+    # The canonical Rayleigh tables, written by src/10_rayleigh `merge`.  They
+    # already fold in data/geodesic, data/profile and every Rayleigh run, so a
+    # figure reads ONE file and gets the widest grid available.  No {} -- these
+    # span all three architectures.
+    "rq_canon_pairs":   "rayleigh/rayleigh_pairs.csv",
+    "rq_canon_profile": "rayleigh/rayleigh_profile.csv",
+    "rq_canon_cells":   "rayleigh/rayleigh_cells.csv",
 }
 
 SMOOTH_ACTS = ["gelu", "tanh", "swish", "softplus"]
@@ -81,6 +92,110 @@ def _canon(df: pd.DataFrame, arch: str) -> pd.DataFrame:
 
 def _read(key: str, arch: str) -> pd.DataFrame:
     return _canon(pd.read_csv(DATA / PATHS[key].format(ARCH_CSV[arch])), arch)
+
+
+def load_rayleigh_canon(kind: str = "cells") -> pd.DataFrame:
+    """The canonical Rayleigh table: `cells`, `pairs` or `profile`.
+
+    Produced by `src/10_rayleigh/measure_rayleigh.py merge`, which folds
+    data/geodesic (R_F, lambda_max), data/profile (R_F(t)), data/train (the
+    barrier) and every Rayleigh run into one table, preferring the source with
+    the widest coverage and recording the choice in the `src_*` columns.
+
+    Regimes are mapped to the paper's spelling and `arch` to its labels.  ReLU
+    is NOT dropped -- unlike `_canon`, which drops it because differentiating F
+    needs C^3.  The Rayleigh quotient differentiates nothing, so ReLU rows are
+    real measurements and throwing them away would discard cells.  Filter on
+    `smooth == 1` to reproduce the paper's four-activation subset."""
+    df = pd.read_csv(DATA / PATHS[f"rq_canon_{kind}"])
+    if "status" in df:
+        df = df[df["status"].astype(str).str.startswith("ok")]
+    df = df.copy()
+    df["regime"] = df["regime"].map(REGIME_FROM_CSV)
+    df = df[df["regime"].notna()]
+    df["arch"] = df["arch"].map({"mlp": "MLP", "cnn": "CNN", "ts": "TS"})
+    for c in df.columns:
+        if c not in ("regime", "act", "arch", "status") and not c.startswith("src_"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
+def rayleigh_canon_cells(min_widths: int = 3, need: str | None = None) -> pd.DataFrame:
+    """Canonical cells, keeping only those that can carry a fitted exponent.
+
+    `min_widths` is the threshold `fit_alpha` applies, so every cell returned
+    has finite exponents.  `need` names a column that must be present -- pass
+    "align_mid_rat" for the alignment figures, which exist only where tr F/P
+    was measured."""
+    c = load_rayleigh_canon("cells")
+    if need:
+        c = c[c[need].notna()]
+    return c.groupby(["arch", "regime", "act"]).filter(
+        lambda g: g["width"].nunique() >= min_widths)
+
+
+def load_profile_length(arch: str = "MLP") -> pd.DataFrame:
+    """R_F(t) along the linear path, long format, from `src/04_profile`.
+
+    The file on disk is WIDE -- one `rq_t0.000` ... `rq_t1.000` column per grid
+    point, 21 of them -- because that is how the measurement wrote it.  Every
+    figure wants it long, so the reshape happens here, once.
+
+    This is the bigger of the two profile measurements in the repository: 84
+    cells (3 regimes x 4 smooth activations x 7 widths), 840 seed pairs, on a
+    21-point grid.  `data/rayleigh/mlp_profile.csv` is an independent later run
+    on a 9-point grid covering 6 cells; the two agree to a maximum relative
+    deviation of 7e-05 over the 1800 rows they share, which is why either can be
+    trusted -- but prefer this one, it has twice the cells and a finer grid."""
+    df = pd.read_csv(DATA / PATHS["profile_len"].format(ARCH_CSV[arch]))
+    if "status" in df:
+        df = df[df["status"].astype(str).str.startswith("ok")]
+    tcols = [c for c in df.columns if c.startswith("rq_t")]
+    keys = ["regime", "act", "width", "seedA", "seedB", "dnorm"]
+    long = df.melt(id_vars=[k for k in keys if k in df.columns],
+                   value_vars=tcols, var_name="tcol", value_name="rq_t")
+    long["t"] = long["tcol"].str.removeprefix("rq_t").astype(float)
+    long = long.drop(columns=["tcol"])
+    long["regime"] = long["regime"].map(REGIME_FROM_CSV)
+    long = long[long["regime"].notna()]
+    long["arch"] = arch
+    for c in ("width", "rq_t", "t", "dnorm"):
+        if c in long:
+            long[c] = pd.to_numeric(long[c], errors="coerce")
+    return long.dropna(subset=["rq_t"])
+
+
+def load_rayleigh(kind: str = "cells", arch: str = "MLP") -> pd.DataFrame:
+    """Rows from the Rayleigh run (src/10_rayleigh), for ONE architecture.
+
+    Deliberately NOT routed through `_canon`, for one reason: `_canon` drops
+    every non-smooth activation, and `relu` is legitimate here.  The C^3
+    requirement that excludes it elsewhere comes from differentiating F, and
+    the Rayleigh quotient differentiates nothing -- it is one JVP and one VJP.
+    Dropping relu would silently discard a measured cell.
+
+    Regime names are still mapped to the paper's spelling, and `status` is
+    still filtered, so the rest of the conventions hold."""
+    df = pd.read_csv(DATA / PATHS[f"rq_{kind}"].format(ARCH_CSV[arch]))
+    if "status" in df:
+        df = df[df["status"].astype(str).str.startswith("ok")]
+    df = df.copy()
+    df["regime"] = df["regime"].map(REGIME_FROM_CSV)
+    df = df[df["regime"].notna()]
+    df["arch"] = arch
+    for c in df.columns:
+        if c not in ("regime", "act", "arch", "status", "mode", "kind"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
+def rayleigh_cells(min_widths: int = 3, arch: str = "MLP") -> pd.DataFrame:
+    """Per-cell Rayleigh rows, keeping only cells with enough widths to carry a
+    fitted exponent.  `min_widths` is the same threshold _fit_alpha applies, so
+    a cell that appears here always has a finite alpha."""
+    c = load_rayleigh("cells", arch)
+    return c.groupby(["regime", "act"]).filter(
+        lambda g: g["width"].nunique() >= min_widths)
 
 
 def load_pairs(kind: str = "final") -> pd.DataFrame:

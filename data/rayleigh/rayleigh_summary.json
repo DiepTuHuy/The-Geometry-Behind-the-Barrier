@@ -1,0 +1,63 @@
+{
+  "n_cell_groups": 38,
+  "with_trP": 6,
+  "alpha_align": {
+    "median": 0.02075,
+    "min": -0.5496,
+    "max": 0.0571,
+    "n_abs_le_0.1": 5
+  },
+  "alpha_trP_median": 2.01445,
+  "alpha_rq_median": 1.8002,
+  "dip": {
+    "n_cells": 13,
+    "alpha_dip_median": -0.5092,
+    "n_deepening": 13
+  },
+  "barrier_regression": {
+    "all": {
+      "alpha_flen": {
+        "n": 37,
+        "r2": 0.9107,
+        "slope": 1.1232
+      },
+      "alpha_rq": {
+        "n": 37,
+        "r2": 0.0344,
+        "slope": 0.2059
+      },
+      "alpha_trP": {
+        "n": 6,
+        "r2": 0.7576,
+        "slope": 1.0414
+      },
+      "alpha_align": {
+        "n": 6,
+        "r2": 0.0793,
+        "slope": -0.8128
+      },
+      "alpha_dnorm": {
+        "n": 37,
+        "r2": 0.3503,
+        "slope": 1.0891
+      }
+    },
+    "smooth_only": {
+      "alpha_flen": {
+        "n": 36,
+        "r2": 0.9062,
+        "slope": 1.1195
+      },
+      "alpha_rq": {
+        "n": 36,
+        "r2": 0.0229,
+        "slope": 0.1664
+      }
+    }
+  },
+  "published_reference": {
+    "fisher_length_r2": 0.904,
+    "fisher_length_slope": 1.13,
+    "rayleigh_r2": 0.026
+  }
+}

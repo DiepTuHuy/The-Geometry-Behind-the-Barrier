@@ -1,0 +1,53 @@
+
+ANCHOR [mlp]  360 pairs matched against data/geodesic/mlp_pairs.csv
+   rq_A     median rel dev 1.07e-06   max 3.16e-05  (n=360)
+   rq_mid   median rel dev 2.09e-07   max 2.40e-06  (n=360)
+   rq_B     median rel dev 1.04e-06   max 7.02e-05  (n=360)
+
+==========================================================================
+EXPONENT SPLIT   alpha_rq = alpha_trP + alpha_align
+  alpha > 0 means the quantity DECREASES with width.
+  alpha_align > 0  <=>  Delta-hat moves down the spectrum FASTER than
+                        the spectrum itself moves down (directional).
+  alpha_align ~ 0  <=>  R_F is tracking tr F, and carries no direction.
+==========================================================================
+mode regime act          a_rq   a_trP  a_algn    r2  a_dnrm  a_flen  algn@mid
+-----------------------------------------------------------------------------
+mlp  mup    relu        2.348   2.291   0.057  0.23  -0.457   1.436     0.969
+mlp  mup    softplus    2.223   2.268  -0.045  0.11  -0.450   1.324     0.608
+mlp  mup    tanh        1.875   2.425  -0.550  0.92  -0.482   0.914     5.775
+mlp  ntk    relu          nan     nan     nan   nan     nan     nan     0.125
+mlp  ntk    softplus    1.800   1.760   0.040  0.08  -0.707   0.386     0.044
+mlp  ntk    tanh          nan     nan     nan   nan     nan     nan     0.076
+mlp  sp     gelu        1.179   1.167   0.012  0.00  -0.369   0.442     0.992
+mlp  sp     swish       1.226   1.197   0.029  0.01  -0.375   0.479     0.703
+
+alpha_align over 6 cells: median +0.021, IQR [-0.031, +0.037], 0/6 cells above +0.1
+alpha_trP  over the same cells: median +2.014
+Read this as the answer to the directional-versus-global question; the
+script does not decide it for you.
+
+residual of alpha_flen = alpha_rq + 2 alpha_dnorm: max 0.002 over 6 cells, 6 nonzero  <-- those cells fitted different width grids; check them
+
+residual of alpha_rq   = alpha_trP + alpha_align: max 0.000 over 6 cells, 1 nonzero  <-- those cells fitted different width grids; check them
+
+==========================================================================
+BARRIER REGRESSION   alpha_B ~ predictor, one point per cell
+==========================================================================
+
+  all 45 cells (5 activations)
+    Fisher length  alpha_LF     n=  5  R2=0.978  slope=+1.626
+    Rayleigh       alpha_RF     n=  5  R2=0.683  slope=+1.222
+    mean eigval    alpha_trF/P  n=  5  R2=0.727  slope=+0.966
+    alignment      alpha_A      n=  5  R2=0.261  slope=-1.344
+    chord          alpha_||D||  n=  5  R2=0.010  slope=+0.492
+
+  36 smooth cells (published subset)
+    Fisher length  alpha_LF     n=  5  R2=0.978  slope=+1.626
+    Rayleigh       alpha_RF     n=  5  R2=0.683  slope=+1.222
+    mean eigval    alpha_trF/P  n=  5  R2=0.727  slope=+0.966
+    alignment      alpha_A      n=  5  R2=0.261  slope=-1.344
+    chord          alpha_||D||  n=  5  R2=0.010  slope=+0.492
+
+  The published MNIST-grid numbers to compare against:
+    Fisher length R2 = 0.904, slope 1.13    Rayleigh R2 = 0.026

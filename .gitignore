@@ -21,3 +21,10 @@ ckpt_*/
 
 # Logs
 *.log
+
+# Torchvision downloads -- the scripts fetch these automatically.
+# data/ holds the released CSVs, so the rules are targeted, not blanket.
+data/MNIST/
+data/FashionMNIST/
+data/cifar-10-batches-py/
+src/*/data/
