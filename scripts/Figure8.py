@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-figD7_rho_heatmap.py -- Appendix D: endpoint uncertainty for all 36 cells.
+Figure8.py -- Appendix D: endpoint uncertainty for all 36 cells.
 
 A heatmap rather than a table, and rather than the nine small-multiple panels an
 earlier draft used.  Against a table it wins because the reader's question here
@@ -116,7 +116,7 @@ def main():
     panel_letter(ax_a, "a", dx=-0.02, dy=1.06)
     panel_letter(ax_b, "b", dx=-0.02, dy=1.06)
     fig.subplots_adjust(left=0.150, right=0.945, top=0.86, bottom=0.10)
-    save(fig, OUT, "figD7_rho_heatmap")
+    save(fig, OUT, "Figure8")
 
     ntk = np.array([drift[i] for i, (a, r) in enumerate(ROWS) if r == "NTK"])
     oth = np.array([drift[i] for i, (a, r) in enumerate(ROWS) if r != "NTK"])

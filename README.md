@@ -39,7 +39,7 @@ Re-running the **measurements** needs a GPU and days of compute — see
 
 ## Main result
 
-`scripts/figp5_length_predicts.py` regresses the barrier exponent `α_B` on two
+`scripts/Figure5.py` regresses the barrier exponent `α_B` on two
 candidate predictors across **n = 36 cells** (3 architectures × 3 regimes × 4 smooth
 activations):
 
@@ -49,11 +49,11 @@ activations):
 | **`α_ΔᵀFΔ`** | **Fisher length** | **0.90** |
 
 Only **Fisher length** predicts how the barrier scales with width — direction alone
-does not. Reproduce with `python3 scripts/figp5_length_predicts.py`; it prints
+does not. Reproduce with `python3 scripts/Figure5.py`; it prints
 `n cells = 36 | Fisher length R2 = 0.904, slope = 1.13 | Rayleigh R2 = 0.026`.
 
 The companion claim — the barrier grows while the metric flattens — is
-`scripts/figp1_paradox.py`, which prints the measured `α_B` and `α_∂F` per regime.
+`scripts/Figure1.py`, which prints the measured `α_B` and `α_∂F` per regime.
 
 ---
 
@@ -98,36 +98,38 @@ re-measures, which is why the figures reproduce in seconds on any machine.
 
 ## Figure → script → data
 
+Each script is named for the figure number it carries in the paper.
+
 Main text (`figures/main/`):
 
 | Figure | Script | Reads |
 |---|---|---|
-| 1 | `scripts/figp1_paradox.py` | `data/final/*_pairs.csv` + `data/train/*_combined.csv` |
-| 2 | `scripts/figp2_deviation.py` | `data/geodesic/*_pairs.csv` |
-| 3 | `scripts/figp3_rayleigh.py` | `data/geodesic/*_pairs.csv` |
-| 4 | `scripts/figp4_regime_barrier.py` | `data/final/*_pairs.csv` |
-| 5 | `scripts/figp5_length_predicts.py` | `data/final/*_pairs.csv` + `data/geodesic/*_pairs.csv` |
-| 6 | `scripts/figp6_regime_uncertainty.py` | `data/final/*_pairs.csv` |
+| 1 | `scripts/Figure1.py` | `data/final/*_pairs.csv` + `data/train/*_combined.csv` |
+| 2 | `scripts/Figure2.py` | `data/param_geo_mlp_cg1000.csv` |
+| 3 | `scripts/Figure3.py` | `data/geodesic/*_pairs.csv` |
+| 4 | `scripts/Figure4.py` | `data/final/*_pairs.csv` |
+| 5 | `scripts/Figure5.py` | `data/final/*_pairs.csv` + `data/geodesic/*_pairs.csv` |
 
-Appendix (`figures/appendix/`):
+Appendix D (`figures/appendix/`):
 
 | Figure | Script | Reads |
 |---|---|---|
-| roadmap | `scripts/figR_roadmap.py` | *(none — schematic)* |
-| B.2 | `scripts/figB_scaling.py` | `data/final/*_pairs.csv` |
-| C.4–C.5 | `scripts/figC_geodesic.py` | `data/final/*_pairs.csv` + `data/train/*_combined.csv` |
-| D.1 | `scripts/fig_counterexample_D.py` | *(none — closed-form counterexample)* |
-| D.2 | `scripts/figD_vacuous.py` | `data/final/*_pairs.csv` + `data/geodesic/*_pairs.csv` |
-| E.1 | `scripts/figE_pipeline.py` | *(none — schematic)* |
-| E | `scripts/figE_gridcheck.py` | `data/regrid/summary.csv` |
-| F.1 | `scripts/figF_exponents.py` | `data/final/*` + `data/geodesic/*` + `data/train/*` |
-| F.7 | `scripts/figF_within.py` | via `figp5_length_predicts.measured_cells()` |
+| 6 | `scripts/Figure6.py` | `data/final/*_pairs.csv` + `data/train/*_combined.csv` |
+| 7 | `scripts/Figure7.py` | `data/geodesic/*_pairs.csv` |
+| 8 | `scripts/Figure8.py` | `data/final/*_pairs.csv` |
+| 9 | `scripts/Figure9.py` | `data/final/*_pairs.csv` |
+| 10 | `scripts/Figure10.py` | `data/final/*_pairs.csv` + `data/geodesic/*_pairs.csv` |
+| 11 | `scripts/Figure11.py` | `data/scale/*` + `data/final/*` + `data/geodesic/*` |
+| 12 | `scripts/Figure12.py` | `data/scale/*` + `data/final/*` + `data/geodesic/*` |
+
+Scripts not tied to a paper figure keep their working names:
+`figp2_deviation`, `figp6_regime_uncertainty`, `figD9_quadrants`,
+`figD16_rayleigh_split`, `figD17_rayleigh_profile`, `figR_roadmap`.
 
 No plotting script hardcodes a path. The complete CSV map is the `PATHS` dictionary at
 the top of [`scripts/fig_data.py`](scripts/fig_data.py) — move the data, edit one block.
-`data/regrid/` is the only exception: it is read directly by `figE_gridcheck.py`, which
-is the one figure that is a convergence check on the quadrature grid rather than a plot
-of the main measurement.
+`data/regrid/` is the exception: it holds the quadrature-grid convergence check
+rather than a measurement plotted in the paper.
 
 ---
 

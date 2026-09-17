@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-figp1_paradox.py -- Figure 1: the central empirical contrast.
+Figure1.py -- Figure 1: the central empirical contrast.
 
 Panel (a): interpolation barrier B vs width in the three parameterization
            regimes (collapses in Standard/muP, persists in NTK-lazy).
@@ -114,7 +114,7 @@ def main():
     despine(ax_b)
     legend_table(ax_b, rows_b, loc="upper right")
 
-    save(fig, OUT, "figp1_paradox")
+    save(fig, OUT, "Figure1")
     print("  measured alpha_B      :",
           {k: round(v, 2) for k, v in exp_a.items()})
     print("  measured alpha_dF     :",

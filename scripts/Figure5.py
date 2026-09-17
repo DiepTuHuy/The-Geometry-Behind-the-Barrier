@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-figp5_length_predicts.py -- Figure 5: Fisher length predicts the barrier.
+Figure5.py -- Figure 5: Fisher length predicts the barrier.
 
 Barrier exponents alpha_B versus Fisher-length exponents alpha_{L_F} (a)
 and Rayleigh-quotient exponents alpha_{R_F} (b), across the 36 cells
@@ -145,7 +145,7 @@ def main():
                handletextpad=0.4, fontsize=7)
     fig.subplots_adjust(bottom=0.24)
 
-    save(fig, OUT, "figp5_length_predicts")
+    save(fig, OUT, "Figure5")
     print(f"  n cells = {len(rows)} | Fisher length R2 = "
           f"{res_a.rvalue**2:.3f}, slope = {res_a.slope:.2f}"
           f" | Rayleigh R2 = {res_b.rvalue**2:.3f}")

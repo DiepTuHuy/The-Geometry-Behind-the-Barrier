@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-figp4_regime_barrier.py -- Figure 4: regime dependence of barrier collapse.
+Figure4.py -- Figure 4: regime dependence of barrier collapse.
 
 Interpolation barrier normalised by the smallest-width baseline of the same
 architecture and regime (dashed line: ratio = 1).  NTK-lazy stays at or above
@@ -146,7 +146,7 @@ def main():
                      xy=(CNN_WM[0] * 0.86, 3.2),
                      fontsize=6.4, color=C["ref"], ha="left", va="center")
 
-    save(fig, OUT, "figp4_regime_barrier")
+    save(fig, OUT, "Figure4")
 
 
 if __name__ == "__main__":

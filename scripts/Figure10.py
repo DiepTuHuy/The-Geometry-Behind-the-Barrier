@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-figD8_joint.py -- Appendix D: the summary claim in one plane.
+Figure10.py -- Appendix D: the summary claim in one plane.
 
 The claim names two conditions -- the Fisher length must fall, and the endpoint
 uncertainty must be controlled -- and the barrier is the outcome.  All three fit
@@ -119,7 +119,7 @@ def main():
               bbox_to_anchor=(0.015, 0.80), columnspacing=1.2,
               handletextpad=0.4, fontsize=7, labelspacing=0.35)
     fig.subplots_adjust(left=0.105, right=0.845, top=0.965, bottom=0.175)
-    save(fig, OUT, "figD8_joint")
+    save(fig, OUT, "Figure10")
 
     n_corner = int(((c["a_flen"] > x_stop) & (c["rho"] > RHO_HI)).sum())
     print(f"  high-rho cells (n={len(hi)}): a_flen <= {x_stop:.2f}")

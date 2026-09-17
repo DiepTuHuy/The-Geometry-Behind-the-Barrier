@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-figD10_paradox_arch.py -- Appendix D: Figure 1 for the two architectures the
+Figure6.py -- Appendix D: Figure 1 for the two architectures the
 main text does not show.
 
 Figure 1 makes the paper's central contrast on the MLP alone -- the barrier
@@ -124,7 +124,7 @@ def main():
         panel_letter(ax_b, "bd"[r], dx=-0.10)
 
     fig.subplots_adjust(left=0.115, right=0.995, top=0.955, bottom=0.105)
-    save(fig, OUT, "figD10_paradox_arch")
+    save(fig, OUT, "Figure6")
 
     for k, v in out.items():
         print(f"  {k[0]:3s} {k[1]:2s}: " +
