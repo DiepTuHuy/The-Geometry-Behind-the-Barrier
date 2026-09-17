@@ -1,41 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- measure_final_{MODE}.py -- LAN DO CUOI tu checkpoint da co (khong train lai)
-============================================================================
-Gom TAT CA phep do con thieu vao mot lan chay. Tai su dung nguyen primitives
-cua measure_geo.py (build_net / perm_spec / weight_matching / apply_perm /
-fisher_vp / cg_solve / christoffel_dd / green) nen so lieu so sanh truc tiep
-duoc voi param_geo_{MODE}.csv da co.
+"""Final measurement pass over existing checkpoints; nothing is retrained.
 
-DO 4 NHOM:
+Collects every remaining measurement into one run. The primitives of the
+geodesic script are reused unchanged (build_net / perm_spec / weight_matching /
+apply_perm / fisher_vp / cg_solve / christoffel_dd / green), so the numbers are
+directly comparable with the param_geo_{MODE}.csv already produced.
 
- (1) L(t) tren luoi min      -> t* = argmax,  B = max_t L - 1/2(L_A+L_B)
- (2) rho*(t) = E||p_w(x)-e_y||_2   (Dinh nghia 2.3, thang [0, sqrt(2)])
-     -> CAU HOI GATING: rho*(mid) nho => F ~= Hess o trung diem;
-                        rho*(mid) lon => F != Hess ma du bao van chay.
- (3) flen(t) = 1/2 Delta^T F(gamma(t)) Delta  tren luoi tho + tai t*
-     -> R(t) := B / (flen(t)/4)  = ti so voi du bao bac hai
-        (da biet: R_end ~ 0.81 o NTK, R_mid ~ 1.0 o feature-learning)
- (4) SWEEP lambda cho do lech trac dia: dev_rel o lam_rel in {1e-1,1e-2,1e-3}
-     -> kiem so mu bat bien theo damping (Nhan xet 5.1).
-        lam_rel=1e-2 trung voi lan do cu => dong thoi la cross-check pipeline.
+Four groups are measured:
 
-PHASE (bien moi truong):
-    PHASE=rho    chi (1)(2)          -- chi forward pass, RE, chay truoc
-    PHASE=full   (1)(2)(3)           -- them fisher_vp
-    PHASE=all    (1)(2)(3)(4)        -- them CG + Green cho sweep lambda   [mac dinh]
+ (1) L(t) on a fine grid -> t* = argmax, B = max_t L - 1/2 (L_A + L_B)
+ (2) rho*(t) = E ||p_w(x) - e_y||_2, the predictive uncertainty of the paper,
+     on [0, sqrt(2)]. This is the gating quantity: rho*(mid) small means
+     F ~= Hess at the midpoint; rho*(mid) large means F != Hess, and the
+     prediction still has to be checked.
+ (3) flen(t) = 1/2 Delta^T F(gamma(t)) Delta on a coarse grid and at t*,
+     with R(t) := B / (flen(t)/4), the ratio against the quadratic prediction
+     (previously measured: R_end ~ 0.81 under ntk, R_mid ~ 1.0 with feature
+     learning).
+ (4) A lambda sweep for the geodesic deviation: dev_rel at
+     lam_rel in {1e-1, 1e-2, 1e-3}, checking that the width exponent does not
+     move with the damping. lam_rel=1e-2 coincides with the earlier run, so it
+     doubles as a cross-check of the pipeline.
 
-CAN CO SAN:
-    ckpt_{RUN_TAG}/{regime}_{act}_w{w}_s{s}.pt      (bat buoc)
-    combined_p{MODE}*.csv                            (tuy chon, de selfcheck B)
-    du lieu MNIST/FashionMNIST tai ./data            (mlp/cnn; ts la synthetic)
+PHASE (environment variable):
+    PHASE=rho    (1)(2) only -- forward passes only, cheap, run this first
+    PHASE=full   (1)(2)(3)   -- adds fisher_vp
+    PHASE=all    (1)(2)(3)(4) -- adds CG and Green for the lambda sweep [default]
 
-OUTPUT:
-    param_final_{MODE}.csv        theo cap, resumable
-    final_{MODE}_cell.csv         gop theo o
-============================================================================
+Required on disk:
+    ckpt_{RUN_TAG}/{regime}_{act}_w{w}_s{s}.pt      (required)
+    combined_p{MODE}*.csv                           (optional, to self-check B)
+    MNIST / FashionMNIST under ./data               (mlp/cnn; ts is synthetic)
+
+Output:
+    param_final_{MODE}.csv   one row per pair, resumable
+    final_{MODE}_cell.csv    aggregated per cell
 """
 import os, sys, time, math, glob, itertools, traceback
 try:
@@ -50,7 +50,7 @@ def _tv():
     import torchvision; return torchvision
 
 # ==================================================================== CONFIG
-MODE       = "cnn"                       # <<< dat boi ban phat hanh
+MODE       = "cnn"                       # architecture this file measures
 RESUME     = True
 SELFCHECK  = True
 RUN_TAG    = {"mlp":"pmlp_v2","cnn":"pcnn_v2","ts":"pts_v2"}[MODE]
@@ -59,18 +59,18 @@ PHASE      = os.environ.get("PHASE", "all")   # rho | full | all
 WIDTHS   = {"mlp":[64,128,256,512,1024,2048,4096],
             "cnn":[1,2,4,8,16],
             "ts" :[64,128,256,512,1024,2048,4096]}[MODE]
-ACTS     = ["gelu","tanh","swish","softplus"]      # C^3, dong nhat geo script
+ACTS     = ["gelu","tanh","swish","softplus"]      # C^3 only, as in the geodesic script
 REGIMES  = ["ntk","sp","mup"]
 NSEEDS   = 5
-PAIRS    = int(os.environ.get("PAIRS", "10"))     # PAIRS=3 de quet nhanh truoc
+PAIRS    = int(os.environ.get("PAIRS", "10"))     # PAIRS=3 for a quick first pass
 
-TGRID_FINE   = 41       # L(t), rho*(t)  -- forward pass
-TGRID_COARSE = 9        # flen(t), Gamma(t) -- trung luoi Green cua geo script
-EVAL_N       = 10000    # so mau cho L va rho*
-FISHER_N     = 2048     # = GEO_BATCH cu, giu nguyen de so sanh duoc
+TGRID_FINE   = 41       # L(t), rho*(t) -- forward passes only
+TGRID_COARSE = 9        # flen(t), Gamma(t) -- the Green grid of the geodesic script
+EVAL_N       = 10000    # samples used for L and rho*
+FISHER_N     = 2048     # same as GEO_BATCH, so the numbers stay comparable
 MICRO        = 64
 
-# --- sweep lambda (chi chay tren LAM_PAIRS cap dau moi o: du de kiem so mu) ---
+# --- lambda sweep, on the first LAM_PAIRS pairs of each cell: enough to check the exponent ---
 LAM_RELS   = [1e-1, 1e-2, 1e-3]
 LAM_PAIRS  = int(os.environ.get("LAM_PAIRS", "3"))
 FD_EPS     = 3e-3
@@ -561,7 +561,7 @@ def aggregate(path):
             s = gr.dropna(subset=[c])
             if len(s) < 3: return np.nan
             b, _ = np.polyfit(np.log(s.width), np.log(s[c]), 1); return -b
-        log("\n  so mu dev_rel theo lambda (phai gan nhau => ket luan bat bien damping):")
+        log("\n  dev_rel exponent against lambda (close values => the conclusion is damping-invariant):")
         for (r, a), gr in g.groupby(["regime","act"]):
             v = [f"{_slope(gr, f'devrel_lam{l:g}'):.2f}" for l in [0.1, 0.01, 0.001]]
             log(f"    {r:4s}/{a:9s}  1e-1={v[0]}  1e-2={v[1]}  1e-3={v[2]}")
@@ -572,7 +572,7 @@ def selfcheck(path):
     cb = _first([f"combined_p{MODE}*dFfixed*.csv", f"combined_p{MODE}*.csv",
                  f"/kaggle/input/**/combined_p{MODE}*.csv"])
     if not cb:
-        log("[selfcheck] khong tim thay combined -> bo qua"); return
+        log("[selfcheck] no combined file found -> skipping"); return
     a = pd.read_csv(path); a = a[a.status.astype(str) == "ok"]
     a["B"] = pd.to_numeric(a["B"], errors="coerce")
     x = a.groupby(["regime","act","width"])["B"].median().rename("B_new").reset_index()

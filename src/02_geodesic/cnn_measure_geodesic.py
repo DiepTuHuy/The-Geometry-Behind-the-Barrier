@@ -1,43 +1,48 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- measure_geo.py  --  DO DO LECH TRAC DIA (§5.1) tu checkpoint da train
-============================================================================
-Vá mat xich con thieu cua paper: cac experiment (param_{mlp,cnn,ts}_v2) moi do
-wmove / dF / barrier / acc, NHUNG chua do "truong trac dia gan duong noi suy
-tuyen tinh". §5.1 hua "xay dung day du bo may do" cho:
+"""Measure the geodesic-linear deviation from trained checkpoints.
 
-        sup_t || gamma_g(t) - gamma_lin(t) ||          (do lech trac dia)
+The training runs record wmove / dF / barrier / acc, but not the geodesic field
+near the linear interpolation. This script supplies
 
-o BAC NHAT, qua bieu dien Green cua Bo de 4.10 va Christoffel cua G_F=F+lambda I:
+        sup_t || gamma_g(t) - gamma_lin(t) ||
 
-  gamma_lin'' = 0  =>  residual trac dia cua duong thang = Gamma(delta,delta)
-  xi = gamma_g - gamma_lin,  xi'' ~= -Gamma_gamma_lin(delta,delta)   (bac nhat)
-  xi(t) = int_0^1 G(t,s) Gamma(delta,delta)(gamma_lin(s)) ds
-  G(t,s) = s(1-t) neu s<=t, t(1-s) neu s>=t
+to first order, through the Green representation of the Poincare-Sobolev lemma
+and the Christoffel symbols of G_F = F + lambda I.
 
-Christoffel (Levi-Civita cho G_F, delta=delta):
-  Gamma(delta,delta) = 1/2 G_F^{-1} [ 2 (d_delta F) delta  -  m ],
+Since gamma_lin'' = 0, the geodesic residual of the straight line is
+Gamma(delta, delta), and with xi = gamma_g - gamma_lin,
+
+  xi''    ~= -Gamma_{gamma_lin}(delta, delta)            (first order)
+  xi(t)    = int_0^1 G(t,s) Gamma(delta,delta)(gamma_lin(s)) ds
+  G(t,s)   = s(1-t) for s <= t,  t(1-s) for s >= t
+
+The Levi-Civita connection of G_F at u = v = delta is
+
+  Gamma(delta,delta) = 1/2 G_F^{-1} [ 2 (d_delta F) delta - m ],
      m_l = delta^T (d_l F) delta = grad_w [ delta^T F(w) delta ]_l
 
-Bo may TAI SU DUNG fisher_vp/dFz da validate may-precision cua ban; THEM:
-  - grad_quad : m = grad_w <delta,F delta> qua autograd (jvp long trong grad)
-  - cg_solve  : G_F^{-1} qua conjugate gradient (chi can fisher_vp)
-  - green     : cau phuong Green
+fisher_vp and dFz are reused unchanged from the training scripts. Added here:
 
-CANH BAO DIEN GIAI (theo Remark 5.1 + 4.5 cua paper):
-  * Do lon TUYET DOI phu thuoc CG damping lambda -> CHI doc so mu theo width va
-    ti so tuong doi (bat bien-scale). Script bao cao dev_rel = sup||xi||/||delta||.
-  * Can Thm4.7(III) chi triet tieu khi alpha>2 (ly thuyet KHONG bao dam) -> ket
-    luan phai neo tren PHEP DO nay, khong tren nguong tiem can.
-  * dFz lay theo huong don vi delta_hat (khop eps da hieu chuan cho dF).
+  grad_quad : m = grad_w <delta, F delta> by autograd through a jvp
+  cg_solve  : G_F^{-1} by conjugate gradients, needing only fisher_vp
+  green     : the Green quadrature
 
-CACH DUNG:
-  - Chinh MODE ("mlp"/"cnn"/"ts"), SHARD_ID (0..5), tro CKPT toi noi luu .pt.
-  - SMOKE=True: tu train 2 net tinh de test toan tuyen (~phut) roi do.
-  - Output: param_geo_{MODE}_shard{ID}.csv  (kind="geo"), resumable.
-============================================================================
+Reading the output:
+
+  * Absolute magnitudes carry the CG damping lambda, so only width exponents
+    and scale-invariant ratios are meaningful. The script reports
+    dev_rel = sup_t ||xi|| / ||delta||.
+  * The certified bound is O(n^{2-alpha}) and vanishes only for alpha > 2,
+    which the theory does not guarantee. Conclusions must rest on this
+    measurement, not on an asymptotic threshold.
+  * dFz is taken along the unit direction delta_hat, at the eps already
+    calibrated for dF.
+
+Usage:  set MODE ("mlp"/"cnn"/"ts") and point CKPT_ROOTS at the saved .pt files.
+        GEO_SMOKE=1 trains two tiny nets and measures them, to exercise the
+        whole path in a few minutes. GEO_SHARD=0..5 runs a single shard.
+Output: param_geo_<MODE>_shard<ID>.csv (kind="geo"), resumable.
 """
 import os, sys, time, math, glob, itertools, traceback
 try: sys.stdout.reconfigure(line_buffering=True); sys.stderr.reconfigure(line_buffering=True)
@@ -46,14 +51,14 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF","expandable_segments:True")
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
-def _tv():   # torchvision chi can cho mlp/cnn (ts la synthetic)
+def _tv():   # torchvision is needed for mlp/cnn only; ts is synthetic
     import torchvision; return torchvision
 
-# ==================================================================== CONFIG (STANDALONE — hardcoded MODE, chay HET, chuan ICLR)
-MODE       = "cnn"                     # <<< kien truc cua file nay
+# ==================================================================== CONFIG
+MODE       = "cnn"                     # architecture this file measures
 RESUME     = True
-SMOKE      = os.environ.get("GEO_SMOKE","0")=="1"     # tuy chon: self-train ckpt nho de test toan tuyen (~phut)
-ONLY_SHARD = os.environ.get("GEO_SHARD")              # tuy chon: "0".."5" chay 1 shard (song song nhieu account); None = HET
+SMOKE      = os.environ.get("GEO_SMOKE","0")=="1"     # train two tiny nets and measure them, as an end-to-end check
+ONLY_SHARD = os.environ.get("GEO_SHARD")              # "0".."5" runs one shard; None runs all of them
 RUN_TAG    = {"mlp":"pmlp_v2","cnn":"pcnn_v2","ts":"pts_v2"}[MODE]
 
 def _first(pats):
@@ -62,7 +67,7 @@ def _first(pats):
         h=sorted(glob.glob(p,recursive=True))
         if h: return h[0]
     return None
-CKPT_ROOTS = [".","/kaggle/input","/content","/content/drive/MyDrive"]   # find_ckpt glob de-quy trong day
+CKPT_ROOTS = [".","/kaggle/input","/content","/content/drive/MyDrive"]   # searched recursively by find_ckpt
 COMBINED   = _first([os.environ.get("COMBINED"),
     f"combined_p{MODE}*dFfixed*.csv", f"combined_p{MODE}*.csv",
     f"/kaggle/input/**/combined_p{MODE}*dFfixed*.csv", f"/kaggle/input/**/combined_p{MODE}*.csv",
@@ -74,22 +79,22 @@ if SMOKE:
     GEO_ACTS=["gelu","tanh"]; GEO_PAIRS=1; GEO_TGRID=5; GEO_BATCH=128; GEO_MICRO=64; NSEEDS=2; CG_ITERS=60; POWER_ITERS=12
 else:
     GEO_WIDTHS={"mlp":[64,128,256,512,1024,2048,4096],"cnn":[1,2,4,8,16],"ts":[64,128,256,512,1024,2048,4096]}[MODE]
-    GEO_ACTS=["gelu","tanh","swish","softplus"]      # C^3: KHONG relu (kink) — dong nhat DF_ACTS
-    GEO_PAIRS=10                # = combinations(5,2): DONG NHAT voi barrier
-    GEO_TGRID=9                 # Green quadrature (integrand tron)
-    GEO_BATCH=2048              # = DF_BATCH: Fisher trong geo TRUNG dung batch da do dF (Xgeo == Xdf)
+    GEO_ACTS=["gelu","tanh","swish","softplus"]      # C^3 only, as for dF: relu is excluded
+    GEO_PAIRS=10                # combinations(5,2), the same pairs as the barrier
+    GEO_TGRID=9                 # Green quadrature nodes; the integrand is smooth
+    GEO_BATCH=2048              # same batch dF was measured on, so Xgeo == Xdf
     GEO_MICRO=64; NSEEDS=5
-    CG_ITERS=300; POWER_ITERS=20   # CG cap cao (auto-stop o tol; du cho lam_rel nho khi sweep)
+    CG_ITERS=300; POWER_ITERS=20   # CG stops early at CG_TOL; this ceiling covers the small lambda of the sweep
 
 FD_EPS=3e-3; FD_RICH=True; LAM_REL=1e-2
-LAM_SWEEP=[1e-1,1e-2,1e-3] if os.environ.get("GEO_LAMSWEEP","0")=="1" else None  # bat: kiem so mu bat bien theo lambda (Rmk 5.1)
+LAM_SWEEP=[1e-1,1e-2,1e-3] if os.environ.get("GEO_LAMSWEEP","0")=="1" else None  # check that the width exponent does not move with lambda
 CG_TOL=1e-6
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DIN,K={"mlp":(784,10),"cnn":(None,10),"ts":(64,10)}[MODE]
 SHARD_PLAN={0:("ntk",["relu","gelu","tanh"]),1:("ntk",["swish","softplus"]),
             2:("sp",["relu","gelu","tanh"]),3:("sp",["swish","softplus"]),
             4:("mup",["relu","gelu","tanh"]),5:("mup",["swish","softplus"])}
-SHARD_ID=""   # khong dung (giu tuong thich cot CSV)
+SHARD_ID=""   # unused here; kept so the CSV columns match the training runs
 
 def log(*a): print(f"[{time.strftime('%H:%M:%S')}]", *a, flush=True)
 def set_seed(s): np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
@@ -118,13 +123,13 @@ class ScaledConv(nn.Module):
     def forward(self,x): return self.fmul*F.conv2d(x,self.weight,None,self.st,self.pad)
 def _gn(c): return nn.GroupNorm(1,c)
 
-class NetMLP(nn.Module):     # mlp & ts
+class NetMLP(nn.Module):     # mlp and ts
     def __init__(self, width, act, regime="ntk", din=DIN, k=K):
         super().__init__()
         self.fc1=ScaledLinear(din,width,regime,"input"); self.fc2=ScaledLinear(width,width,regime,"hidden"); self.fc3=ScaledLinear(width,k,regime,"output")
         self.a1=make_act(act); self.a2=make_act(act); self.width=width; self.regime=regime
     def forward(self,x): return self.fc3(self.a2(self.fc2(self.a1(self.fc1(x)))))
-class NetCNN(nn.Module):     # cnn (ScaledConv + GroupNorm)
+class NetCNN(nn.Module):     # ScaledConv + GroupNorm
     def __init__(self, wm, act, regime="ntk", in_ch=1, k=K):
         super().__init__(); c=[16*wm,32*wm,64*wm]
         self.c1=ScaledConv(in_ch,c[0],3,1,1,regime,"input"); self.n1=_gn(c[0]); self.a1=make_act(act)
@@ -141,7 +146,7 @@ class NetCNN(nn.Module):     # cnn (ScaledConv + GroupNorm)
 def build_net(width, act, regime):
     return NetCNN(width,act,regime) if MODE=="cnn" else NetMLP(width,act,regime)
 
-# ---- perm spec (giong script tuong ung) ----
+# ---- permutation spec, as in the matching training script ----
 def perm_spec(model):
     if MODE=="cnn":
         ag={"c1.weight":["g1",None,None,None],"n1.weight":["g1"],"n1.bias":["g1"],
@@ -192,7 +197,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
         if moved==0: break
     return perms
 
-# ==================================================================== PRIMITIVES (giong script)
+# ==================================================================== PRIMITIVES (as in the training scripts)
 def _pb(m): return ({k:v.detach() for k,v in m.named_parameters()},{k:v.detach() for k,v in m.named_buffers()})
 def _call(m,p,b,x): return functional_call(m,{**p,**b},(x,))
 def fisher_vp(m,p,b,x,v,micro):
@@ -226,12 +231,13 @@ def quad_scalar(m,p,b,x,delta,micro):
         Su=pr*u-pr*(pr*u).sum(1,keepdim=True); t=(u*Su).sum()
         total=t if total is None else total+t
     return total/B
-def _quad_sum(m,p,b,xb,delta):          # SUM tren chunk cua u^T S u (khong chia B)
+def _quad_sum(m,p,b,xb,delta):          # sum of u^T S u over a chunk, not divided by B
     def f(pp): return _call(m,pp,b,xb)
     logits,u=_fjvp(f,(p,),(delta,)); pr=torch.softmax(logits,1)
     Su=pr*u-pr*(pr*u).sum(1,keepdim=True); return (u*Su).sum()
-def grad_quad(m,p,b,x,delta,micro):    # m_l = delta^T (d_l F) delta = grad_w<delta,F delta>
-    B=x.shape[0]; acc=None                # cong grad theo micro-batch -> bo nho chan boi micro (KHONG giu graph ca batch)
+def grad_quad(m,p,b,x,delta,micro):    # m_l = delta^T (d_l F) delta = grad_w <delta, F delta>
+    B=x.shape[0]; acc=None                # accumulate per micro-batch, so memory is bounded by micro
+                                          # rather than by holding a graph over the whole batch
     for i in range(0,B,micro):
         gi=_grad(lambda pp: _quad_sum(m,pp,b,x[i:i+micro],delta))(p)
         acc={k:gi[k].detach() for k in gi} if acc is None else {k:acc[k]+gi[k].detach() for k in acc}
@@ -262,9 +268,10 @@ def cg_solve(m,p,b,x,rhs,lam,micro,x0=None,iters=80,tol=1e-6):
     return xk, math.sqrt(_vdot(r,r)/r0)
 def christoffel_dd(m,p,b,x,delta,lam,micro,x0=None):
     dn=_vnorm(delta); dhat=_vscale(delta,1.0/dn)
-    # (d_delta F) delta: tach hai muc eps de do eps-stability (parity voi validation dF). Cung so fisher_vp nhu Richardson.
-    d1=dFz(m,p,b,x,dhat,dhat,FD_EPS,micro,False)                       # central diff @ eps
-    d2=dFz(m,p,b,x,dhat,dhat,FD_EPS/2,micro,False)                     # @ eps/2
+    # (d_delta F) delta at two eps levels, to report finite-difference stability.
+    # Costs the same number of fisher_vp calls as Richardson alone.
+    d1=dFz(m,p,b,x,dhat,dhat,FD_EPS,micro,False)                       # central difference at eps
+    d2=dFz(m,p,b,x,dhat,dhat,FD_EPS/2,micro,False)                     # and at eps/2
     t1r={k:(4*d2[k]-d1[k])/3 for k in d1} if FD_RICH else d1           # Richardson
     fd_instab=_vnorm({k:d1[k]-d2[k] for k in d1})/max(_vnorm(t1r),1e-30)  # |cd(eps)-cd(eps/2)|/|Richardson|
     t1={k:t1r[k]*dn*dn for k in t1r}
@@ -291,7 +298,7 @@ def load_data():
         if "d" in _CACHE: return _CACHE["d"]
         ds=_tv().datasets.FashionMNIST("./data",train=True,download=True)
         X=((ds.data.float()/255.0)-0.2860)/0.3530; X=X.unsqueeze(1); _CACHE["d"]=X; return X
-    # ts: chi can input X ~ N(0,I_64) (Fisher = ky vong theo x)
+    # ts needs inputs only: F is an expectation over x, so X ~ N(0, I_64) suffices
     if "d" in _CACHE: return _CACHE["d"]
     g=torch.Generator().manual_seed(1); X=torch.randn(20000,DIN,generator=g); _CACHE["d"]=X; return X
 
@@ -329,7 +336,7 @@ def already_done(path,regime,act,w,i,j,lam_rel):
             if key in ln and f"{lam_rel}" in ln and ln.strip().endswith("ok"): return True
     return False
 
-# ==================================================================== SELF-TEST (dense, tiny)
+# ==================================================================== SELF-TEST (tiny, dense)
 def self_test():
     log("  [self-test] Gamma(dd) vp==dense + Green ...")
     old=torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
@@ -353,16 +360,16 @@ def self_test():
     global CG_ITERS,CG_TOL; oi,ot=CG_ITERS,CG_TOL; CG_ITERS,CG_TOL=300,1e-12
     g_vp,_,_=christoffel_dd(m,p,b,x,delta,lam,micro=8); CG_ITERS,CG_TOL=oi,ot
     rel=float((flat(g_vp)-g_dense).norm()/max(g_dense.norm(),1e-12))
-    assert rel<1e-6, f"Gamma sai {rel:.2e}"
+    assert rel<1e-6, f"Gamma mismatch: {rel:.2e}"
     ts=np.linspace(0,1,21); G=green_matrix(list(ts)); dt=ts[1]-ts[0]
     xi=(G@torch.full((len(ts),),0.7,dtype=torch.float64))*dt
     ge=float((xi-torch.tensor([0.7*t*(1-t)/2 for t in ts])).abs().max())
-    assert ge<1e-10, f"Green sai {ge:.2e}"
+    assert ge<1e-10, f"Green quadrature mismatch: {ge:.2e}"
     log(f"  [self-test] OK  Gamma rel={rel:.2e}  Green err={ge:.2e}")
     torch.set_default_dtype(old)
 
 def _smoke_train(regime,act,w,seed):
-    """train NHANH 1 net tinh de smoke-test toan tuyen (chi khi khong co ckpt)."""
+    """Train one small net quickly, to smoke-test the path when no checkpoint exists."""
     set_seed(seed); m=build_net(w,act,regime).to(DEVICE).train()
     if MODE=="cnn":
         ds=_tv().datasets.FashionMNIST("./data",train=True,download=True)
@@ -384,7 +391,7 @@ def _smoke_train(regime,act,w,seed):
     m.eval(); sd={k:v.detach().cpu().clone() for k,v in m.state_dict().items()}
     torch.save({"sd":sd,"acc":0.0,"dF":None,"wmove":0.0},os.path.join(ckpt_dir(),f"{regime}_{act}_w{w}_s{seed}.pt"))
 
-# ==================================================================== MAIN (chay HET cell -> gop -> {mode}_final.csv)
+# ==================================================================== MAIN
 def _fit_alpha(width,val):
     w=np.asarray(width,float); y=np.asarray(val,float); ok=(w>0)&(y>0)&np.isfinite(w)&np.isfinite(y)
     if ok.sum()<2: return (float("nan"),float("nan"))
@@ -404,7 +411,7 @@ def run_geo():
     for (regime,act) in cells:
         for w in GEO_WIDTHS:
             try:
-                # --- nap NSEEDS ckpt ---
+                # --- load the NSEEDS checkpoints ---
                 sds=[]; accs=[]
                 for s in range(NSEEDS):
                     cp=find_ckpt(regime,act,w,s)
@@ -412,28 +419,29 @@ def run_geo():
                     if cp is None: continue
                     sd,acc,_=load_sd(cp); sds.append(sd); accs.append(acc)
                 if len(sds)<2:
-                    log(f"  [{act}/w{w}] < 2 ckpt (thay {len(sds)}) -> bo"); 
+                    log(f"  [{act}/w{w}] fewer than 2 checkpoints ({len(sds)}) -> skip"); 
                     write_row(out,dict(kind="geo",mode=MODE,shard="",regime=regime,act=act,width=w,status="skip:nockpt")); continue
                 log(f"=== {act}/w{w}  ({len(sds)} nets) ===")
                 ag,gs=perm_spec(build_net(w,act,regime))
                 ref=build_net(w,act,regime).to(DEVICE).eval(); p_ref,b_ref=_pb(ref); pkeys=set(p_ref.keys())
-                def to_params(sd):   # chi lay PARAM keys (khong buffer), theo thu tu named_parameters
+                def to_params(sd):   # parameter keys only, in named_parameters order
                     return {k:sd[k].to(DEVICE) for k in p_ref.keys()}
 
                 pairs=list(itertools.combinations(range(len(sds)),2))[:GEO_PAIRS]
                 for (i,j) in pairs:
                     if RESUME and all(already_done(out,regime,act,w,i,j,lr_) for lr_ in lam_rels):
-                        log(f"  [pair {i}-{j}] tat ca lam_rel da co -> skip"); continue
-                    # ---- phan dung chung (khong phu thuoc lambda): align, delta, lmax, do dai Fisher ----
+                        log(f"  [pair {i}-{j}] every lam_rel already measured -> skip"); continue
+                    # ---- lambda-independent part: align, delta, lmax, Fisher length ----
                     try:
                         perms=weight_matching(ag,gs,sds[i],sds[j],iters=8,seed=i*13+j)
                         sdB=apply_perm(sds[j],ag,perms)
                         pA=to_params(sds[i]); pB=to_params(sdB)
                         delta={k:(pB[k]-pA[k]) for k in pA}; dn=_vnorm(delta); d2=max(dn*dn,1e-30)
                         lmax=lam_max(ref,pA,b_ref,Xgeo,GEO_MICRO,POWER_ITERS,seed=17)
-                        # DO DAI FISHER (§5.2): 1/2 delta^T F delta va Rayleigh delta_hat^T F delta_hat, tai A/mid/B
+                        # Fisher length 1/2 delta^T F delta and Rayleigh quotient
+                        # delta_hat^T F delta_hat, at A / midpoint / B
                         def _flen(pt):
-                            q=_vdot(delta, fisher_vp(ref,pt,b_ref,Xgeo,delta,GEO_MICRO))  # = delta^T F(pt) delta >=0
+                            q=_vdot(delta, fisher_vp(ref,pt,b_ref,Xgeo,delta,GEO_MICRO))  # delta^T F(pt) delta >= 0
                             return 0.5*q, q/d2
                         pmid={k:0.5*(pA[k]+pB[k]) for k in pA}
                         flA,rqA=_flen(pA); flM,rqM=_flen(pmid); flB,rqB=_flen(pB)
@@ -442,20 +450,20 @@ def run_geo():
                         write_row(out,dict(kind="geo",mode=MODE,shard="",regime=regime,act=act,width=w,seedA=i,seedB=j,status="error:"+repr(e)[:40])); continue
                     for lr_ in lam_rels:
                         if RESUME and already_done(out,regime,act,w,i,j,lr_):
-                            log(f"  [pair {i}-{j} lam_rel={lr_}] da co -> skip"); continue
+                            log(f"  [pair {i}-{j} lam_rel={lr_}] already measured -> skip"); continue
                         try:
                             lam=max(lr_*lmax,1e-12)
-                            # Gamma(dd) doc luoi t, warm-start CG
+                            # Gamma(delta,delta) along the t grid, warm-starting CG
                             ts=list(np.linspace(0,1,GEO_TGRID))
                             gammas=[]; resids=[]; fdis=[]; x0=None
                             for tt in ts:
                                 pt={k:(1-tt)*pA[k]+tt*pB[k] for k in pA}
                                 g,res,fdi=christoffel_dd(ref,pt,b_ref,Xgeo,delta,lam,GEO_MICRO,x0=x0)
-                                x0=g                                   # warm-start CG (GPU)
-                                gammas.append({k:v.detach().cpu() for k,v in g.items()})   # luu CPU: tranh OOM o width lon
+                                x0=g                                   # warm start for the next t
+                                gammas.append({k:v.detach().cpu() for k,v in g.items()})   # keep on CPU: avoids OOM at large width
                                 resids.append(res); fdis.append(fdi)
                             mid=int(np.argmin([abs(t-0.5) for t in ts])); gamma_mid=_vnorm(gammas[mid])
-                            # tich phan Green tren CPU: xi(t)=int G(t,s) Gamma(s) ds -> sup_t ||xi||
+                            # Green integral on CPU: xi(t) = int G(t,s) Gamma(s) ds -> sup_t ||xi||
                             G=green_matrix(ts); dt=ts[1]-ts[0]
                             keys=list(delta.keys()); n=len(ts)
                             sup=0.0
@@ -514,7 +522,7 @@ def build_final(geo_csv):
     for cc in ["width","dev_rel","dev_geo","dnorm","gamma_mid","flen_mid","rq_mid","fd_instab","lam_rel"]:
         if cc in g: g[cc]=pd.to_numeric(g[cc],errors="coerce")
     if set(["dev_geo","dnorm"]).issubset(g.columns): g["dev_rel2"]=g["dev_geo"]/g["dnorm"]**2
-    # neu co sweep lambda: bao cao o lam_rel=1e-2 (chinh); giu du lieu sweep o param_geo_*.csv
+    # with a lambda sweep, report lam_rel=1e-2; the sweep itself stays in param_geo_*.csv
     if "lam_rel" in g and g["lam_rel"].notna().any():
         gg2=g[np.isclose(g["lam_rel"],1e-2)]
         if len(gg2)>0: g=gg2
@@ -558,23 +566,23 @@ def build_final(geo_csv):
     T=T[order].sort_values(["regime","act","width"]).reset_index(drop=True)
     fin=os.path.join(OUT_DIR,f"{MODE}_final.csv"); T.to_csv(fin,index=False)
     hv = "dev_rel_med" in T and T["dev_rel_med"].notna().any()
-    log(f"-> {fin}  ({len(T)} o)  shape/length={'CO' if hv else 'NaN(chua co geo)'}  dF={'CO' if comb is not None else 'thieu'}")
+    log(f"-> {fin}  ({len(T)} cells)  shape/length={'yes' if hv else 'NaN (no geo yet)'}  dF={'yes' if comb is not None else 'missing'}")
 
 def _seed_resume():
-    # Ke thua tien do tu lan chay truoc: neu OUT_DIR chua co param_geo_{MODE}.csv,
-    # tim ban cu trong input (vd dataset da add) va copy vao de RESUME bo qua cell da xong.
+    # Resume: if OUT_DIR has no param_geo_{MODE}.csv, look for an earlier copy
+    # under the input roots and bring it in, so finished cells are skipped.
     import shutil
     dst=os.path.join(OUT_DIR, f"param_geo_{MODE}.csv")
     if os.path.exists(dst): 
-        n=sum(1 for _ in open(dst))-1; log(f"[resume] da co {dst} ({n} dong) -> tinh tiep"); return
+        n=sum(1 for _ in open(dst))-1; log(f"[resume] found {dst} ({n} rows) -> continuing"); return
     old=_first([f"param_geo_{MODE}.csv",
                 f"/kaggle/input/**/param_geo_{MODE}.csv",
                 f"/content/drive/MyDrive/**/param_geo_{MODE}.csv"])
     if old and os.path.abspath(old)!=os.path.abspath(dst):
         shutil.copy(old,dst); n=sum(1 for _ in open(dst))-1
-        log(f"[resume] nap tien do cu: {old} -> {dst} ({n} dong da xong)")
+        log(f"[resume] imported earlier progress: {old} -> {dst} ({n} rows done)")
     else:
-        log("[resume] chua co tien do cu -> tinh tu dau")
+        log("[resume] no earlier progress -> starting from scratch")
 
 def main():
     log(f"=== run_geo[{MODE}] DEVICE={DEVICE} SMOKE={SMOKE} ONLY_SHARD={ONLY_SHARD} ===")
@@ -585,6 +593,6 @@ def main():
     geo=run_geo()
     try: build_final(geo)
     except Exception as e:
-        traceback.print_exc(); log("!! gop loi (param_geo_*.csv van con):", repr(e)[:100])
+        traceback.print_exc(); log("!! merge failed (param_geo_*.csv is still on disk):", repr(e)[:100])
 
 if __name__=="__main__": main()

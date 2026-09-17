@@ -1,36 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- run_lambda_sweep.py  --  CHAY THANG, KHONG CAN CHINH GI
-============================================================================
-     python run_lambda_sweep.py
-============================================================================
+"""Damping sweep for the geodesic deviation: the first, smaller version.
 
-MUC DICH (mot cau):
-  Chung minh so mu cua do lech trac dia dev_rel theo width KHONG phu thuoc
-  hang so damping lambda trong G_F = F + lambda*I.
+     python lambda_sweep_v1_legacy.py
 
-VI SAO CAN:
-  Rayleigh doc Delta co xuong ~1e-8 o width lon, trong khi lambda = 1e-2*||F||.
-  Tuc doc huong Delta thi G_F ~= lambda*I. Reviewer se noi: "dev_rel co la vi
-  anh do chinh hang so damping cua anh". Quet lambda qua 3 bac; neu SO MU
-  khong doi (du magnitude doi) thi ket luan theo width khong phu thuoc damping.
-  Day dung la dieu Nhan xet 5.1 dang khang dinh ma chua chung minh.
+Purpose
+-------
+Show that the width exponent of dev_rel does not depend on the damping constant
+lambda in G_F = F + lambda I.
 
-PHAM VI (da chot, khong can mo rong):
-  - Chi che do NTK: claim hinh dang chi duoc phat bieu trong NTK (Muc 5.1).
-  - Chi MLP, 2 activation (gelu/tanh = 2 dau mut cua dai alpha_op), 2 cap/o.
-    2 bo so mu doc lap la du cho mot ablation phu luc.
+Why it is needed
+----------------
+The Rayleigh quotient along Delta falls to ~1e-8 at large width, while
+lambda = 1e-2 ||F||. Along the direction Delta, G_F is then essentially
+lambda I, and a reader may object that dev_rel shrinks only because the damping
+constant was tuned. Sweeping lambda over three decades answers that: if the
+exponent is unchanged, even though the magnitude moves, the conclusion in width
+does not depend on the damping.
 
-DAU RA:
-  lam_sweep_mlp.csv        theo cap (resumable, ngat giua chung chay lai duoc)
-  + BANG SO MU in ra cuoi log:  3 cot gan nhau  =>  ket luan bat bien damping.
+Scope
+-----
+  - ntk only: the shape claim is stated for the lazy regime.
+  - MLP only, two activations (gelu/tanh, the two ends of the alpha_op range)
+    and 2 pairs per cell. Two independent exponents are enough for an appendix
+    ablation.
 
-CAN CO:
-  ckpt_pmlp_v2/{ntk}_{act}_w{w}_s{s}.pt   va  MNIST tai ./data
-  (khong can nhan y: Fisher khong dung nhan)
-============================================================================
+This is the original, narrower version; the per-regime scripts in this
+directory supersede it and cover all three regimes with 3 pairs per cell.
+
+Output
+------
+  lam_sweep_mlp.csv   one row per pair, resumable
+  plus an exponent table in the log: three columns close together means the
+  conclusion is damping-invariant.
+
+Required on disk
+----------------
+  ckpt_pmlp_v2/ntk_{act}_w{w}_s{s}.pt and MNIST under ./data
+  (labels are not needed: F does not use them)
 """
 import os, sys, time, math, glob, itertools, traceback
 try:
@@ -45,13 +52,13 @@ from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _j
 MODE      = "mlp"
 RUN_TAG   = "pmlp_v2"
 REGIMES   = ["ntk"]                      # chi NTK
-ACTS      = ["gelu","tanh"]              # 2 dau mut cua dai alpha_op (1.03 / 0.86)
+ACTS      = ["gelu","tanh"]              # the two ends of the alpha_op range (1.03 / 0.86)
 WIDTHS    = [64,128,256,512,1024,2048,4096]
 NSEEDS    = 5
-PAIRS     = 2                            # ablation can do BEN, khong can thong ke
+PAIRS     = 2                            # an ablation needs a stable number, not statistics
 LAM_RELS  = [1e-1, 1e-2, 1e-3]           # lambda = LAM_REL * ||F||_op
 
-TGRID     = 9                            # trung luoi Green cua measure_geo
+TGRID     = 9                            # the Green grid of the geodesic script
 FISHER_N  = 2048
 MICRO     = 64
 FD_EPS    = 3e-3
@@ -154,7 +161,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
         if moved == 0: break
     return perms
 
-# ------------------------------------------------------------------ DATA (khong can nhan)
+# ------------------------------------------------------------------ DATA (labels are not needed)
 _C = {}
 def load_X():
     if "X" in _C: return _C["X"]
@@ -314,9 +321,9 @@ def _build_index():
             for fn in fns:
                 if fn.endswith(".pt"): idx.setdefault(fn, os.path.join(dp, fn))
     _IDX = idx
-    log(f"[ckpt] tim thay {len(idx)} file .pt")
+    log(f"[ckpt] found {len(idx)} .pt files")
     if not idx:
-        log(f"[ckpt] !! KHONG THAY GI. Sua CKPT_ROOTS o dau file. Thu: ls /kaggle/input/*/")
+        log(f"[ckpt] !! nothing found. Adjust CKPT_ROOTS at the top of this file.")
     return idx
 
 def find_ckpt(regime, act, w, s):
@@ -407,7 +414,7 @@ def report():
         r2 = 1 - ((np.log(s[c]) - yh)**2).sum()/max(((np.log(s[c]) - np.log(s[c]).mean())**2).sum(), 1e-30)
         return -b, r2
     print("\n" + "="*66)
-    print(" SO MU dev_rel THEO WIDTH, QUET 3 BAC DAMPING  (NTK / MLP)")
+    print(" dev_rel EXPONENT IN WIDTH, THREE-DECADE DAMPING SWEEP  (ntk / MLP)")
     print("="*66)
     print(f"{'act':<10}{'lam=1e-1':>13}{'lam=1e-2':>13}{'lam=1e-3':>13}{'do lech':>12}")
     print("-"*66)
@@ -422,13 +429,13 @@ def report():
     mx = np.nanmax(spread) if spread else float("nan")
     print(f"do lech LON NHAT giua cac lambda: {mx:.3f}")
     if mx < 0.10:
-        print("=> SO MU BAT BIEN theo damping. Ket luan hinh dang (Muc 5.1) vung.")
-        print("   Viet vao phu luc: 'so mu dev_rel bat bien qua 3 bac damping'.")
+        print("=> the exponent is invariant under damping; the shape conclusion holds.")
+        print("   For the appendix: the dev_rel exponent is invariant across three decades of damping.")
     elif mx < 0.25:
-        print("=> Gan bat bien. Bao cao ca 3 cot, neu ro bien do trong phu luc.")
+        print("=> nearly invariant. Report all three columns and state the spread in the appendix.")
     else:
-        print("=> !! SO MU PHU THUOC DAMPING. Phai noi yeu claim hinh dang lai;")
-        print("   ba ket qua chinh (rho*, R, flen) KHONG bi anh huong vi khong dung G_F^-1.")
+        print("=> !! the exponent depends on the damping. The shape claim must be weakened;")
+        print("   the three main results (rho*, R, flen) are unaffected, as they do not use G_F^-1.")
     print("="*66)
 
 if __name__ == "__main__":

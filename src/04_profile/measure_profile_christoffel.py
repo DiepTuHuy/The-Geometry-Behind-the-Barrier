@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- measure_profile_christoffel.py -- CHRISTOFFEL Gamma(Delta,Delta)(t) DOC CA
-                                   DUONG, o CA BA CHE DO (ntk / sp / mup)
-============================================================================
-     python measure_profile_christoffel.py             # MODE=mlp, chay het
-     SHARD=0 python measure_profile_christoffel.py     # chi manh 0 (ntk/gelu+tanh)
+"""Christoffel symbol Gamma(Delta,Delta)(t) along the whole path, all regimes.
+
+     python measure_profile_christoffel.py             # MODE=mlp, full grid
+     SHARD=0 python measure_profile_christoffel.py     # shard 0 only (ntk/gelu+tanh)
      MODE=cnn SHARD=2 python measure_profile_christoffel.py
 
-CHAY LANH -- KHONG CAN KET QUA NAO CO TRUOC
---------------------------------------------
-File nay chi doc CHECKPOINT (.pt) va CSV resume cua chinh no. Khong phu thuoc
-profile_shape_*.csv hay bat cu ket qua nao khac. Lan dau chay: khong tim thay
-CSV cu -> bat dau tu dong 0, hoan toan binh thuong.
-(param_geo_*.csv chi dung de DOI CHIEU o cuoi, thieu cung khong sao: ANCHOR=0.)
+Cold start: nothing else has to have run
+----------------------------------------
+This file reads only checkpoints (.pt) and its own resume CSV. It does not
+depend on profile_shape_*.csv or any other result. On a first run there is no
+old CSV, so it starts from row 0, which is normal. param_geo_*.csv is used only
+for a cross-check at the end; without it the run is fine and ANCHOR=0.
 
-CHIA MANH -- BAT BUOC PHAI DE Y
--------------------------------
-Chay het mot luot cho MLP la 3 che do x 4 act x 7 width x PAIRS cap, moi cap
-TGRID lan giai CG. Voi PAIRS=3 (mac dinh) la 252 cap = 2268 lan giai CG --
-KHONG vua mot session Kaggle. Dung SHARD=0..5 de rai ra 6 session:
+Sharding: read this before launching
+------------------------------------
+A full MLP pass is 3 regimes x 4 activations x 7 widths x PAIRS pairs, and each
+pair costs TGRID CG solves. At PAIRS=3 that is 252 pairs = 2268 CG solves,
+which does not fit in one session. SHARD=0..5 spreads it over six:
 
-     SHARD  che do   activation            cap (mlp)
+     SHARD  regime   activations           pairs (mlp)
        0    ntk      gelu, tanh                42
        1    ntk      swish, softplus           42
        2    sp       gelu, tanh                42
@@ -30,56 +27,57 @@ KHONG vua mot session Kaggle. Dung SHARD=0..5 de rai ra 6 session:
        4    mup      gelu, tanh                42
        5    mup      swish, softplus           42
 
-Moi manh ghi CHUNG mot file profile_christoffel_{mode}.csv, khoa resume la
-(regime, act, width, seedA, seedB) nen ghep lai khong dam nhau: cu noi duoi
-file cu roi chay manh tiep theo. Script in ETA sau moi o de biet co kip khong.
+All shards append to the same profile_christoffel_{mode}.csv. The resume key is
+(regime, act, width, seedA, seedB), so shards cannot collide: append to the
+existing file and launch the next one. An ETA is printed after each cell.
 
-VA DAU KHUYET NAO
------------------
-Bo may do (run-*.py) DA tinh Gamma tren luoi 9 diem o ca 3 che do, nhung CHI
-ghi ra MOT so duy nhat: gamma_mid = ||Gamma(1/2)||. Toan bo hinh dang cua
-truong Christoffel doc duong bi vut di. File nay ghi lai day du.
+What was missing
+----------------
+The measurement scripts already computed Gamma on a 9-point grid in all three
+regimes, but wrote out a single number, gamma_mid = ||Gamma(1/2)||. The whole
+shape of the Christoffel field along the path was discarded. This file records
+it in full.
 
-CONG THUC (Levi-Civita cho G_F = F + lambda I, huong Delta = Delta)
--------------------------------------------------------------------
-    Gamma(D,D) = 1/2 * G_F^{-1} [ 2 (d_D F) D  -  m ]
+Formula (Levi-Civita for G_F = F + lambda I, direction Delta)
+-------------------------------------------------------------
+    Gamma(D,D) = 1/2 G_F^{-1} [ 2 (d_D F) D - m ]
         m_l = D^T (d_l F) D = grad_w [ D^T F(w) D ]_l
 
-Hai so hang duoc ghi RIENG ra CSV, vi chung noi hai chuyen khac nhau:
-    t1 = 2 (d_D F) D    -- Fisher doi bao nhieu khi di doc D  (sai phan huu han
-                           Richardson tren huong don vi D_hat, roi nhan ||D||^2)
-    m  = grad_w(D^T F D) -- gradient cua chinh do dai Fisher
-Neu hai so hang gan trung nhau (cos ~ +1, chuan gan bang nhau) thi rhs = 2t1-m
-bi TRIET TIEU -- do la luc dev_rel nho khong phai vi khong gian phang, ma vi
-hai so hang khu nhau. Khong tach ra thi khong bao gio thay dieu do.
+The two terms are written to separate columns, because they say different
+things:
+    t1 = 2 (d_D F) D     how much F moves along D (Richardson finite difference
+                         on the unit direction D_hat, then scaled by ||D||^2)
+    m  = grad_w(D^T F D) the gradient of the Fisher length itself
+If the two nearly coincide (cos ~ +1, norms close), then rhs = 2 t1 - m
+cancels -- and a small dev_rel then reflects that cancellation rather than a
+flat space. Kept together in one column, that is invisible.
 
-CHI PHI: day la file NANG NHAT trong ba file.
-    moi moc t = 4 fisher_vp (sai phan 2 muc eps) + 1 grad_quad + CG (<=300 lan
-    fisher_vp). Vi vay giu TGRID=9 dung bang luoi Green cu, KHONG tang.
+Cost: the heaviest of the three profile files. Each t node is 4 fisher_vp (two
+eps levels of a central difference) + 1 grad_quad + CG (up to 300 fisher_vp).
+TGRID stays at 9, matching the Green grid already used, and is not raised.
 
-SAN PHAM PHU MIEN PHI: xi(t)
-----------------------------
-Da co Gamma tren luoi thi tich phan Green cho xi(t) khong ton them GPU nao:
+Free by-product: xi(t)
+----------------------
+With Gamma on the grid, the Green integral for xi(t) costs no extra GPU time:
     xi(t) = int_0^1 G(t,s) Gamma(D,D)(gamma_lin(s)) ds
-    G(t,s) = s(1-t) neu s<=t,  t(1-s) neu s>=t
-Nen file nay ghi luon xinorm_t*. => CHAY FILE NAY TRUOC, roi
-measure_profile_shape.py doc lai, khong phai tinh Gamma lan hai (tiet kiem ~1/2
-tong chi phi GPU cua hai file).
+    G(t,s) = s(1-t) for s <= t,  t(1-s) for s >= t
+so xinorm_t* is written here as well. Run this file first and let
+measure_profile_shape.py read the result, rather than recomputing Gamma a
+second time; that halves the GPU cost of the two files together.
 
-NEO VAO SO CU (tan dung ket qua da chay)
-----------------------------------------
-Doi chieu ||Gamma(1/2)|| voi cot gamma_mid, va sup_t||xi||/||D|| voi cot
-dev_rel, trong result-1/param_geo_{mode}.csv (lam_rel=1e-2). Hai con so nay
-PHAI trung -- kiem tra duong ong mien phi.
+Cross-check against the earlier run
+-----------------------------------
+||Gamma(1/2)|| is compared with the gamma_mid column, and sup_t ||xi||/||D||
+with the dev_rel column, of param_geo_{mode}.csv at lam_rel=1e-2. They must
+agree, which makes this a free pipeline check.
 
-RESUME / KAGGLE: giong measure_profile_length.py (tu keo CSV cu ve, cat dong
-hong, bo qua o da xong truoc khi load .pt, dung theo BUDGET_H).
+Resume: as in measure_profile_length.py -- pull back the old CSV, truncate a
+partial row, skip finished cells before loading any .pt, and stop at BUDGET_H.
 
-OUTPUT
+Output
 ------
-  profile_christoffel_{mode}.csv        theo tung cap, resumable
-  profile_christoffel_{mode}_cell.csv   median theo o
-============================================================================
+  profile_christoffel_{mode}.csv        one row per pair, resumable
+  profile_christoffel_{mode}_cell.csv   per-cell medians
 """
 import os, sys, time, math, glob, shutil, itertools, traceback, zipfile, io
 try:
@@ -90,27 +88,27 @@ import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
 
-# ======================= THAM SO (dong nhat measure_geo.py) =================
+# ======================= PARAMETERS (as in the geodesic script) =============
 MODE      = os.environ.get("MODE", "mlp")          # mlp | cnn | ts | all
-REGIMES   = ["ntk", "sp", "mup"]                   # <<< CA BA CHE DO
+REGIMES   = ["ntk", "sp", "mup"]
 ACTS      = ["gelu", "tanh", "swish", "softplus"]
 NSEEDS    = 5
 
-# PAIRS=3 chu KHONG phai 10: moi cap ton TGRID lan giai CG, day la file nang
-# nhat trong ba file. Ban run_lambda_sweep*.py cung dung 3 cap/o dung vi ly do
-# nay, va 3 cap van du de lay trung vi theo o. Muon day len: PAIRS=10.
+# PAIRS=3, not 10: every pair costs TGRID CG solves and this is the heaviest of
+# the three files. The lambda-sweep scripts use 3 pairs per cell for the same
+# reason, and 3 is still enough for a per-cell median. Raise it with PAIRS=10.
 PAIRS     = int(os.environ.get("PAIRS", "3"))
 
-# CHIA MANH -- chay lanh het mot luot KHONG vua mot session Kaggle.
-# SHARD=0..5 chay dung mot manh (giong SHARD_PLAN cua run-*.py goc), de rai
-# ra nhieu session/account roi ghep CSV lai. Khong dat SHARD = chay het.
+# Sharding: a full cold pass does not fit in one session. SHARD=0..5 runs a
+# single shard, following the same plan as the training scripts, so the work can
+# be spread over several sessions and the CSVs appended. Unset SHARD runs all.
 SHARD      = os.environ.get("SHARD")
 SHARD_PLAN = {0: ("ntk", ["gelu","tanh"]), 1: ("ntk", ["swish","softplus"]),
               2: ("sp",  ["gelu","tanh"]), 3: ("sp",  ["swish","softplus"]),
               4: ("mup", ["gelu","tanh"]), 5: ("mup", ["swish","softplus"])}
 
 def plan_cells():
-    """Danh sach (regime, act) se chay trong lan nay."""
+    """The (regime, act) pairs this run covers."""
     if SHARD not in (None, ""):
         rg, acts = SHARD_PLAN[int(SHARD)]
         return [(rg, a) for a in acts if a in ACTS]
@@ -122,7 +120,7 @@ def active_regimes():
 TGRID     = int(os.environ.get("TGRID", "9"))      # = GEO_TGRID cu (Green quadrature)
 FISHER_N  = 2048                                   # = GEO_BATCH cu
 MICRO     = 64
-FD_EPS    = 3e-3                                   # GIU NGUYEN TUYET DOI = ban cu
+FD_EPS    = 3e-3                                   # unchanged from the earlier runs, deliberately
 FD_RICH   = True                                   # Richardson (4*cd(eps/2)-cd(eps))/3
 LAM_REL   = float(os.environ.get("LAM_REL", "1e-2"))   # lambda = LAM_REL * ||F||_op
 CG_ITERS  = 300
@@ -316,7 +314,7 @@ def fisher_vp(m, p, b, x, v, micro):
     return {k: acc[k]/B for k in acc}
 
 def dFz(m, p, b, x, z, v, eps, micro):
-    """sai phan trung tam cua F theo huong z, ap len vector v."""
+    """Central difference of F along z, applied to the vector v."""
     Fp = fisher_vp(m, _vaxpy(p,  eps, z), b, x, v, micro)
     Fm = fisher_vp(m, _vaxpy(p, -eps, z), b, x, v, micro)
     return {k: (Fp[k]-Fm[k])/(2*eps) for k in p}
@@ -372,7 +370,7 @@ def christoffel_dd(m, p, b, x, delta, lam, micro, x0=None):
     d2 = dFz(m, p, b, x, dhat, dhat, FD_EPS/2, micro)      # @ eps/2
     t1r = {k: (4*d2[k]-d1[k])/3 for k in d1} if FD_RICH else d1
     fd_instab = _vnorm({k: d1[k]-d2[k] for k in d1})/max(_vnorm(t1r), 1e-30)
-    t1 = {k: t1r[k]*dn*dn for k in t1r}                    # (d_D F) D, thang lai theo ||D||^2
+    t1 = {k: t1r[k]*dn*dn for k in t1r}                    # (d_D F) D, rescaled by ||D||^2
     mvec = grad_quad(m, p, b, x, delta, micro)
     rhs = {k: 2*t1[k] - mvec[k] for k in t1}
     sol, resid = cg_solve(m, p, b, x, rhs, lam, micro, x0=x0, iters=CG_ITERS, tol=CG_TOL)
@@ -389,7 +387,7 @@ def green_matrix(ts):
 
 # ------------------------------------------------------------------ SELF-TEST
 def self_test():
-    """Gamma qua vector-product == Gamma dac, va hang so Green = 1/8. Chay o local."""
+    """Gamma by vector products equals dense Gamma, and the Green constant is 1/8."""
     log("  [self-test] Gamma(dd) vp == dense, va hang so Green = 1/8 ...")
     old = torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
     torch.manual_seed(0)
@@ -429,8 +427,8 @@ def self_test():
 
 # ------------------------------------------------------------------ CKPT
 def _diagnose(tag):
-    """Noi THANG vi sao khong thay ckpt, thay vi de vong lap keu '<2 ckpt' hang chuc lan."""
-    log(f"[ckpt] !! KHONG THAY thu muc 'ckpt_{tag}' nao chua file .pt.")
+    """Say plainly why no checkpoint was found, instead of repeating '<2 ckpt' dozens of times."""
+    log(f"[ckpt] !! no 'ckpt_{tag}' directory containing .pt files was found.")
     seen, n_pt, zips = set(), 0, []
     for root in CKPT_ROOTS:
         if not root or not os.path.isdir(root): continue
@@ -440,31 +438,31 @@ def _diagnose(tag):
                 if   fn.endswith(".pt"):  n_pt += 1
                 elif fn.endswith(".zip"): zips.append(os.path.join(dp, fn))
     cand = sorted(d for d in seen if "ckpt" in d.lower())
-    log(f"[ckpt]    dang quet: {[r for r in CKPT_ROOTS if r and os.path.isdir(r)]}")
-    for root in CKPT_ROOTS:                      # cho thay THUC TE co gi trong do
+    log(f"[ckpt]    scanning: {[r for r in CKPT_ROOTS if r and os.path.isdir(r)]}")
+    for root in CKPT_ROOTS:                      # show what is actually there
         if not root or not os.path.isdir(root): continue
         try: top = sorted(os.listdir(root))[:12]
         except OSError: top = []
-        log(f"[ckpt]      {root}  ->  {top or 'RONG'}")
-    log(f"[ckpt]    thu muc co chu 'ckpt': {cand or 'KHONG CO'}")
-    log(f"[ckpt]    tong file .pt (o bat ky dau): {n_pt}")
+        log(f"[ckpt]      {root}  ->  {top or 'empty'}")
+    log(f"[ckpt]    directories containing 'ckpt': {cand or 'none'}")
+    log(f"[ckpt]    total .pt files found anywhere: {n_pt}")
     if zips:
-        log(f"[ckpt]    da QUET CA .zip: {[os.path.basename(z) for z in zips[:3]]} "
-            f"-- nhung khong co .pt nao hop voi ckpt_{tag}")
+        log(f"[ckpt]    .zip archives were scanned too: {[os.path.basename(z) for z in zips[:3]]} "
+            f"-- but none holds a .pt matching ckpt_{tag}")
     if n_pt and not cand:
-        log(f"[ckpt]    -> Co file .pt nhung KHONG nam trong thu muc ten 'ckpt_{tag}'.")
+        log(f"[ckpt]    -> .pt files exist but none sits in a directory named 'ckpt_{tag}'.")
     if cand and f"ckpt_{tag}" not in cand:
-        log(f"[ckpt]    -> Ten thu muc SAI. Can dung: 'ckpt_{tag}'")
+        log(f"[ckpt]    -> wrong directory name; it must be 'ckpt_{tag}'")
     if os.path.isdir("/kaggle/input") and not os.listdir("/kaggle/input"):
-        log(f"[ckpt]    -> /kaggle/input RONG: notebook CHUA duoc gan dataset nao.")
-        log(f"[ckpt]    -> Kaggle: nut 'Add Input' (ben phai) -> chon dataset chua ckpt_{tag}/")
-    log(f"[ckpt]    Cau truc dung: <bat ky>/ckpt_{tag}/{{regime}}_{{act}}_w{{w}}_s{{s}}.pt")
+        log(f"[ckpt]    -> /kaggle/input is empty: no dataset is attached to this notebook.")
+        log(f"[ckpt]    -> attach the dataset holding ckpt_{tag}/ as an input.")
+    log(f"[ckpt]    expected layout: <anything>/ckpt_{tag}/{{regime}}_{{act}}_w{{w}}_s{{s}}.pt")
 
 _IDX = {}
 _ZCACHE = {}
 
 def _zopen(p):
-    """Giu handle .zip mo san -- moi lan mo lai phai doc lai central directory."""
+    """Keep .zip handles open: reopening re-reads the central directory each time."""
     if p not in _ZCACHE: _ZCACHE[p] = zipfile.ZipFile(p)
     return _ZCACHE[p]
 
@@ -475,12 +473,13 @@ def _index_dir(root, tag, idx):
             if fn.endswith(".pt"): idx.setdefault(fn, os.path.join(dp, fn))
 
 def _index_zip(zpath, tag, idx):
-    """Doc .pt THANG TU TRONG .zip -- khong giai nen ra dia (do 12 GB dia trong).
+    """Read .pt directly out of a .zip, without extracting to disk.
 
-    Chap nhan hai kieu zip:
-      (a) co duong dan .../ckpt_{tag}/xxx.pt  -> chi lay dung tag nay
-      (b) zip PHANG, chi toan .pt             -> lay het (zip 1 regime kieu ntk.zip)
-    Neu zip chi chua ckpt_ cua kien truc KHAC -> bo qua, khong lay nham.
+    Two archive layouts are accepted:
+      (a) paths of the form .../ckpt_{tag}/xxx.pt  -> only this tag is taken
+      (b) a flat archive of .pt files             -> all of them (e.g. ntk.zip)
+    An archive holding only ckpt_ of another architecture is skipped, so nothing
+    is picked up by mistake.
     """
     try:
         z = _zopen(zpath)
@@ -492,11 +491,11 @@ def _index_zip(zpath, tag, idx):
         other  = any("/ckpt_" in norm(n) for n in names)
         use    = scoped if scoped else ([] if other else names)
         if not use and other:
-            log(f"[ckpt]    (bo qua {os.path.basename(zpath)}: chi chua ckpt_ cua kien truc khac)")
+            log(f"[ckpt]    (skipping {os.path.basename(zpath)}: it only holds ckpt_ of another architecture)")
         for n in use: idx.setdefault(os.path.basename(n), ("zip", zpath, n))
         return len(use), nested
     except Exception as e:
-        log(f"[ckpt] !! khong doc duoc {zpath}: {e!r}")
+        log(f"[ckpt] !! could not read {zpath}: {e!r}")
         return 0, []
 
 def _build_index(tag):
@@ -504,19 +503,19 @@ def _build_index(tag):
     idx = {}; zips = []
     for root in CKPT_ROOTS:
         if not root or not os.path.isdir(root): continue
-        _index_dir(root, tag, idx)                       # thu muc da giai nen: uu tien
+        _index_dir(root, tag, idx)                       # already-extracted directories win
         for dp, _, fns in os.walk(root):
             zips += [os.path.join(dp, f) for f in fns if f.endswith(".zip")]
     n_zip = 0; nested = []
-    # dedup theo duong dan THAT: cac CKPT_ROOTS long nhau se thay cung mot zip
-    # duoi hai ten khac nhau ("kinput/a.zip" vs "./kinput/a.zip").
+    # Deduplicate by real path: nested CKPT_ROOTS see the same archive under two
+    # names ("kinput/a.zip" vs "./kinput/a.zip").
     for zp in sorted({os.path.realpath(z) for z in zips}):
         k, nz = _index_zip(zp, tag, idx); n_zip += k; nested += nz
     _IDX[tag] = idx
-    log(f"[ckpt] ckpt_{tag}: tim thay {len(idx)} file .pt"
-        + (f"  ({n_zip} doc thang tu .zip)" if n_zip else ""))
+    log(f"[ckpt] ckpt_{tag}: found {len(idx)} .pt files"
+        + (f"  ({n_zip} read straight from .zip)" if n_zip else ""))
     if nested:
-        log(f"[ckpt] !! co .zip LONG TRONG .zip ({nested[:2]}) -- giai nen bot mot lop:")
+        log(f"[ckpt] !! nested .zip inside .zip ({nested[:2]}) -- unpack one layer first:")
         log(f"[ckpt]    !unzip -q '/kaggle/input/<ten>/*.zip' -d /kaggle/working/ckpt")
     if not idx:
         _diagnose(tag)
@@ -541,15 +540,15 @@ def load_sd(src):
     return d["sd"], d.get("acc")
 
 # ------------------------------------------------------------------ TRAIN (chi khi THIEU ckpt)
-# CHEP NGUYEN config cua param_{mode}_v2_shard*.py -- KE CA CONG THUC SEED.
-# Sai mot chi tiet la mang train ra KHAC mang goc, va so do duoc se khong con
-# ghep duoc voi param_geo_*.csv (anchor_check se bao lech).
-TRAIN        = os.environ.get("TRAIN", "1") == "1"      # TRAIN=0 de tat han
+# Copied verbatim from the training scripts, including the seed formula. One
+# detail wrong and the network trained here differs from the original, and the
+# measurement no longer matches param_geo_*.csv (anchor_check would report it).
+TRAIN        = os.environ.get("TRAIN", "1") == "1"      # TRAIN=0 disables it entirely
 TRAIN_SEED_BASE = 4321
-TRAIN_ACTS   = ["relu","gelu","tanh","swish","softplus"]  # PHAI giu ca relu:
-                                                          # seed phu thuoc chi so trong DANH SACH NAY
+TRAIN_ACTS   = ["relu","gelu","tanh","swish","softplus"]  # relu must stay: the seed
+                                                          # depends on the index in this list
 TRAIN_LR, TRAIN_BATCH, TRAIN_WARMUP, TRAIN_CLIP = 0.1, 256, 8, 1.0
-TRAIN_EPOCHS = {"mlp": 30, "cnn": 100, "ts": 100}         # khac nhau theo kien truc
+TRAIN_EPOCHS = {"mlp": 30, "cnn": 100, "ts": 100}         # per architecture
 
 def set_seed(s): np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
 
@@ -580,7 +579,7 @@ def _train_xy(mode, train=True):
     _C[key] = (X, Y); return X, Y
 
 def train_one(mode, tag, regime, act, w, s):
-    """Train DUNG mot mang nhu ban goc, luu .pt, va ghi thang vao index."""
+    """Train exactly the original network, save the .pt, and register it in the index."""
     cfg = _MODE_CFG[mode]; ep = TRAIN_EPOCHS[mode]
     set_seed(TRAIN_SEED_BASE + REGIMES.index(regime)*100000
              + cfg["widths"].index(w)*100 + TRAIN_ACTS.index(act)*7 + s)
@@ -588,7 +587,7 @@ def train_one(mode, tag, regime, act, w, s):
     X, Y = _train_xy(mode, True)
     w0 = torch.cat([p.detach().reshape(-1) for p in m.parameters()]).clone()
     opt = torch.optim.SGD(m.opt_groups(TRAIN_LR), momentum=0.9)
-    wu = min(TRAIN_WARMUP, max(1, ep//5))          # warmup tuyen tinh -> cosine
+    wu = min(TRAIN_WARMUP, max(1, ep//5))          # linear warmup, then cosine decay
     def _ll(e):
         if e < wu: return (e+1)/wu
         pr = (e-wu)/max(ep-wu, 1); return 0.5*(1.0 + math.cos(math.pi*pr))
@@ -615,13 +614,13 @@ def train_one(mode, tag, regime, act, w, s):
     fn = f"{regime}_{act}_w{w}_s{s}.pt"
     path = os.path.join(ckpt_dir(tag), fn)
     torch.save({"sd": sd, "acc": acc, "dF": None, "wmove": wmove}, path)
-    _IDX.setdefault(tag, {})[fn] = path        # dang ky ngay, khoi quet lai
+    _IDX.setdefault(tag, {})[fn] = path        # register at once, so no rescan is needed
     del m
     if DEVICE == "cuda": torch.cuda.empty_cache()
     return sd, acc
 
 def load_or_train(mode, tag, regime, act, w, want):
-    """Nap ckpt; thieu thi TRAIN roi nap. Tra ve (sds, accs, got) theo dung thu tu seed."""
+    """Load checkpoints, training any that are missing. Returns (sds, accs, got) in seed order."""
     def _scan():
         sds = []; accs = []; got = []
         for s in range(NSEEDS):
@@ -678,24 +677,25 @@ def restore_csv(path, name):
         src = _seek_csv(name)
         if src and os.path.abspath(src) != os.path.abspath(path):
             try: shutil.copy(src, path); log(f"[resume] khoi phuc CSV tu {src}")
-            except Exception as e: log(f"[resume] copy that bai ({e!r}) -> chay tu dau")
-    # CSV cu phai co DUNG bo cot cua lan chay nay. Doi TGRID (hoac LAM_REL) la
-    # doi so cot -> noi tiep vao se ra file rang cua, pandas doc hong. Gap thi
-    # doi ten file cu di roi chay lai tu dau, con hon lam hong so da co.
+            except Exception as e: log(f"[resume] copy failed ({e!r}) -> starting from scratch")
+    # An existing CSV must carry exactly this run's columns. Changing TGRID (or
+    # LAM_REL) changes their number, so appending would produce a ragged file
+    # that pandas cannot read. In that case the old file is renamed and the run
+    # starts over, rather than corrupting data already collected.
     if os.path.exists(path):
         head = open(path).readline().strip()
         if head and head != ",".join(COLS()):
             bak = path + ".oldcols.bak"
             os.replace(path, bak)
-            log(f"[resume] !! CSV cu co BO COT KHAC ({len(head.split(','))} cot, "
-                f"lan nay {len(COLS())} cot) -- TGRID/LAM_REL da doi?")
-            log(f"[resume] !! da doi ten thanh {bak} -> chay lai tu dau")
+            log(f"[resume] !! the existing CSV has a different column set "
+                f"({len(head.split(','))} vs {len(COLS())}) -- did TGRID/LAM_REL change?")
+            log(f"[resume] !! renamed it to {bak} -> starting from scratch")
     _sanitize(path)
     if os.path.exists(path):
         n = max(sum(1 for _ in open(path)) - 1, 0)
-        log(f"[resume] {path}: {n} dong du lieu san co")
+        log(f"[resume] {path}: {n} existing data rows")
     else:
-        log(f"[resume] chua co CSV cu -> CHAY TU DAU (binh thuong neu lan dau)")
+        log(f"[resume] no existing CSV -> starting from scratch (normal on a first run)")
 
 def load_done(path):
     done = set()
@@ -717,7 +717,7 @@ def anchor_check(mode, path):
     import pandas as pd
     src = _seek_csv(f"param_geo_{mode}.csv") or os.path.join("result-1", f"param_geo_{mode}.csv")
     if not src or not os.path.exists(src):
-        log(f"[anchor] khong thay param_geo_{mode}.csv -> bo qua"); return
+        log(f"[anchor] param_geo_{mode}.csv not found -> skipping"); return
     old = pd.read_csv(src); old = old[old.status.astype(str) == "ok"]
     if "lam_rel" in old:
         old = old[pd.to_numeric(old.lam_rel, errors="coerce").round(6) == round(LAM_REL, 6)]
@@ -730,7 +730,7 @@ def anchor_check(mode, path):
     m = new.merge(old[key + ["gamma_mid","dev_rel"]].rename(
         columns={"gamma_mid":"gamma_mid_old","dev_rel":"dev_rel_old"}), on=key, how="inner")
     if not len(m):
-        log("[anchor] khong khop cap nao -> bo qua"); return
+        log("[anchor] no pair matched -> skipping"); return
     ts = t_grid(); mid = int(np.argmin(np.abs(np.array(ts) - 0.5)))
     log(f"[anchor] doi chieu {len(m)} cap voi param_geo_{mode}.csv (lam_rel={LAM_REL:g}):")
     worst = 0.0
@@ -742,7 +742,7 @@ def anchor_check(mode, path):
         worst = max(worst, float(rel.max()))
         log(f"[anchor]   {nm:16s}: lech trung vi={rel.median():.3%}  max={rel.max():.3%}")
     if worst > 0.02:
-        log("[anchor] !! lech > 2%: kiem tra FD_EPS / CG_TOL / LAM_REL so voi ban cu")
+        log("[anchor] !! off by more than 2%: check FD_EPS / CG_TOL / LAM_REL against the earlier run")
     else:
         log("[anchor] OK -- duong ong khop voi lan do cu")
 
@@ -753,7 +753,7 @@ def run_mode(mode):
     restore_csv(out, f"profile_christoffel_{mode}.csv")
     done = load_done(out)
 
-    if not _build_index(tag):      # kiem tra ckpt TRUOC khi tai du lieu
+    if not _build_index(tag):      # check for checkpoints before loading any data
         if not TRAIN:
             log("[ckpt] -> DUNG LAI: thieu CHECKPOINT (.pt) va TRAIN=0.")
             log("[ckpt]    (.pt = de bai. Dat TRAIN=1 de tu train, hoac gan dataset ckpt vao.)")
@@ -780,7 +780,7 @@ def run_mode(mode):
                     list(itertools.combinations(range(NSEEDS), 2))[:PAIRS]
                     if (regime, act, str(w), str(i), str(j)) not in done]
             if not want:
-                log(f"  [{regime}/{act}/w{w}] da xong -> bo qua"); continue
+                log(f"  [{regime}/{act}/w{w}] already done -> skipping"); continue
             try:
                 sds, accs, got = load_or_train(mode, tag, regime, act, w, want)
                 if len(sds) < 2:
@@ -817,7 +817,7 @@ def run_mode(mode):
                             gn.append(_vnorm(g)); t1n.append(n1); mn.append(n2); cs.append(cos)
                             resids.append(res); fdis.append(fdi)
 
-                        # --- san pham phu mien phi: xi(t) qua tich phan Green ---
+                        # --- free by-product: xi(t) from the Green integral ---
                         keys = list(delta.keys()); xin = []
                         for ti in range(len(ts)):
                             xi = None
@@ -854,7 +854,7 @@ def run_mode(mode):
                                             seedA=i, seedB=j, status="error:"+repr(e)[:40]))
                 del sds
                 if DEVICE == "cuda": torch.cuda.empty_cache()
-                # --- tien do + ETA: biet som shard co kip session khong ---
+                # --- progress and ETA, to tell early whether the shard will finish ---
                 if n_done:
                     el = time.time() - t0; rate = el/n_done
                     rest = max(todo - n_done, 0)

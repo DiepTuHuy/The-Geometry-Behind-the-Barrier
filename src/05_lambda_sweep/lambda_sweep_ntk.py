@@ -1,51 +1,44 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- run_lambda_sweep_ntk.py  --  NHAN CHAY LA XONG, KHONG SUA GI
-============================================================================
-     python run_lambda_sweep_ntk.py
-============================================================================
+"""Damping sweep for the geodesic deviation, ntk regime (MLP/MNIST).
 
-KHAC BAN CU O DIEM NAO (chi 3 diem, phan tinh toan GIU NGUYEN 100%):
-  1. TU KHOI PHUC CSV: dau moi lan chay, script tu copy
-     /kaggle/input/datasets/ANONYMIZED/DATASET/lam_sweep_mlp_ntk.csv
-     ve /kaggle/working roi moi bat dau -> nhan chay la resume ngay,
-     khong can go lenh cp. Ban cu KHONG lam viec nay nen no chay lai tu dau.
-     Kem theo: tu cat bo dong cuoi bi ghi do dang (neu session truoc bi giet
-     dung luc dang ghi) de pandas khong hong khi doc.
-  2. BO QUA O DA XONG TRUOC KHI LOAD .pt: ban cu load ca 5 checkpoint roi
-     moi phat hien khong con gi de lam -- o w4096 mat vai chuc giay vo ich
-     moi o. Ban nay kiem tra truoc, o nao xong thi bo qua trong tich tac.
-  3. DUNG CHU DONG khi gan het gio session (BUDGET_H) de CSV kip flush,
-     thay vi bi giet ngang.
-  Cong thuc, tham so, thu tu vong lap, khoa resume: KHONG DOI. Ket qua
-  chay tiep ghep lien mach voi so lieu cu.
+     python lambda_sweep_ntk.py
 
-MUC DICH KHOA HOC (khong doi):
-  Quet damping cho dev_rel trong che do NTK (MLP/MNIST).
-  Ban NTK cho: so mu dev_rel KHONG bat bien theo damping -- tut deu tu
-  lam=1e-1 xuong lam=1e-3, trung binh 0.236 +- 0.032 tren 12 cap, 12/12
-  cung dau. Cau hoi cua file nay: do tut do co GIONG NHAU giua cac che do
-  khong? Neu offset chung cho moi o -> R^2 cua hoi quy
-  alpha_B ~ alpha_devrel bat bien duoi phep tinh tien chung -> ket qua phu
-  dinh R^2=0.11 (36 o) khong bi damping dung toi. Neu khac nhau -> phai
-  phat bieu lai ket qua devrel trong Figure 1.
-  Cau hoi phu: DAU so mu co on dinh qua 3 bac damping khong.
+Purpose
+-------
+dev_rel is not invariant under the CG damping: measured in the ntk regime it
+falls steadily from lam=1e-1 to lam=1e-3, by 0.236 +- 0.032 over 12 pairs, with
+all 12 of the same sign. The question here is whether that drop is the same in
+every regime. If it is a common offset across cells, the R^2 of the regression
+alpha_B ~ alpha_devrel is invariant under a shared translation, so the negative
+result is untouched by the damping. If it differs by regime, the dev_rel result
+has to be restated. A secondary question is whether the sign of the exponent is
+stable across three decades of damping.
 
-DAU RA:
-  lam_sweep_mlp_ntk.csv        theo cap (resumable)
-  lam_sweep_mlp_ntk_cell.csv   median theo o
-  + BAO CAO cuoi log: bang so mu 3 lambda, do tut theo cap, mu_eff/lambda,
-    va VERDICT.
+Resume behaviour
+----------------
+  1. An existing CSV is copied from the input mount into the working directory
+     before anything starts, so a rerun resumes immediately. A trailing
+     half-written row is truncated, so pandas can still read the file.
+  2. Finished cells are skipped before any .pt is loaded; loading five
+     checkpoints only to find nothing to do wastes tens of seconds per cell at
+     w=4096.
+  3. The run stops on its own near the session limit (BUDGET_H) so the CSV can
+     flush, instead of being killed mid-write.
+  The formulas, parameters, loop order and resume key are unchanged, so new rows
+  join the existing data seamlessly.
 
-CAN CO:
-  ckpt_pmlp_v2/ntk_{act}_w{w}_s{s}.pt   va  MNIST tai ./data
-  (khong can nhan y: Fisher khong dung nhan)
+Output
+------
+  lam_sweep_mlp_ntk.csv        one row per pair, resumable
+  lam_sweep_mlp_ntk_cell.csv   per-cell medians
+  plus a closing report in the log: the exponent at each of the three lambdas,
+  the per-pair drop, mu_eff/lambda, and a verdict.
 
-SAU KHI CHAY XONG (hoac het gio): Save Version de CSV thanh output, roi
-them output do vao dataset -- lan sau nhan chay la tiep tuc dung cho.
-============================================================================
+Required on disk
+----------------
+  ckpt_pmlp_v2/ntk_{{act}}_w{{w}}_s{{s}}.pt and MNIST under ./data
+  (labels are not needed: F does not use them)
 """
 import os, sys, time, math, glob, shutil, itertools, traceback
 try:
@@ -56,36 +49,36 @@ import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
 
-# ======================= TAT CA THAM SO DA CHOT SAN =========================
+# ======================= FIXED PARAMETERS ===================================
 MODE      = "mlp"
 RUN_TAG   = "pmlp_v2"
-REGIMES   = ["ntk"]                # <-- CHO DUY NHAT khac 2 file kia
+REGIMES   = ["ntk"]                # the only line that differs between the three files
 ACTS      = ["gelu","tanh","swish","softplus"]
 WIDTHS    = [64,128,256,512,1024,2048,4096]
 NSEEDS    = 5
-PAIRS     = 3                            # 3 cap/o -- GIU NGUYEN de so voi NTK
+PAIRS     = 3                            # 3 pairs per cell, matching the other regimes
 LAM_RELS  = [1e-1, 1e-2, 1e-3]           # lambda = LAM_REL * ||F||_op
 
-# --- so lieu tham chieu tu ban NTK da chay (de so sanh offset) ---
-NTK_DROP_MEAN = 0.236                    # trung binh (so mu@1e-1 - so mu@1e-3)
-NTK_DROP_SD   = 0.032                    # sd tren 12 cap
-NTK_REF_NAMES = []              # ten file NTK de doc truc tiep, neu co
+# --- reference numbers from the ntk run, to compare the offset against ---
+NTK_DROP_MEAN = 0.236                    # mean of (exponent@1e-1 - exponent@1e-3)
+NTK_DROP_SD   = 0.032                    # standard deviation over 12 pairs
+NTK_REF_NAMES = []              # ntk files to read directly, if present
 
-TGRID     = 9                            # trung luoi Green cua measure_geo
+TGRID     = 9                            # the Green grid of the geodesic script
 FISHER_N  = 2048
 MICRO     = 64
-FD_EPS    = 3e-3                         # GIU NGUYEN tuyet doi = ban NTK
+FD_EPS    = 3e-3                         # unchanged from the ntk run, deliberately
 CG_ITERS  = 300
 CG_TOL    = 1e-6
 POWER_ITERS = 20
 RESUME    = True
-BUDGET_H  = 11.0                         # dung sach truoc khi session bi giet
+BUDGET_H  = 11.0                         # stop cleanly before the session is killed
 
-DATA_ROOT  = "/kaggle/input/datasets/ANONYMIZED/DATASET"   # noi chua CSV cu + ckpt
+DATA_ROOT  = "/kaggle/input/datasets/ANONYMIZED/DATASET"   # holds the earlier CSV and the checkpoints
 CKPT_ROOTS = [DATA_ROOT, ".", "/kaggle/input", "/content", "/content/drive/MyDrive"]
 OUT_DIR   = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 OUT_NAME  = "lam_sweep_mlp_ntk.csv"
-ALT_NAMES = ["lam_sweep_mlp.csv"]                # ten cu khac cua CHINH file nay, neu co
+ALT_NAMES = ["lam_sweep_mlp.csv"]                # earlier names of this same file, if any
 OUT_CSV   = os.path.join(OUT_DIR, OUT_NAME)
 CELL_CSV  = os.path.join(OUT_DIR, "lam_sweep_mlp_ntk_cell.csv")
 DEVICE    = "cuda" if torch.cuda.is_available() else "cpu"
@@ -179,7 +172,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
         if moved == 0: break
     return perms
 
-# ------------------------------------------------------------------ DATA (khong can nhan)
+# ------------------------------------------------------------------ DATA (labels are not needed)
 _C = {}
 def load_X():
     if "X" in _C: return _C["X"]
@@ -340,17 +333,17 @@ def _build_index():
             for fn in fns:
                 if fn.endswith(".pt"): idx.setdefault(fn, os.path.join(dp, fn))
     _IDX = idx
-    log(f"[ckpt] tim thay {len(idx)} file .pt")
+    log(f"[ckpt] found {len(idx)} .pt files")
     if not idx:
-        log(f"[ckpt] !! KHONG THAY GI. Sua CKPT_ROOTS o dau file. Thu: ls /kaggle/input/*/")
+        log(f"[ckpt] !! nothing found. Adjust CKPT_ROOTS at the top of this file.")
     else:
         pref = sorted({fn.split("_")[0] for fn in idx})
-        log(f"[ckpt] tien to (che do) co mat: {pref}")
+        log(f"[ckpt] regime prefixes present: {pref}")
         for rg in REGIMES:
             n = sum(1 for fn in idx if fn.startswith(rg + "_"))
             if n == 0:
-                log(f"[ckpt] !! KHONG CO FILE NAO cho REGIMES='{rg}'.")
-                log(f"[ckpt] !! Doi REGIMES o dau file thanh mot trong {pref} roi chay lai.")
+                log(f"[ckpt] !! no file at all for REGIMES='{rg}'.")
+                log(f"[ckpt] !! set REGIMES to one of {pref} and run again.")
             else:
                 log(f"[ckpt] '{rg}': {n} file -- OK")
     return idx
@@ -370,7 +363,7 @@ COLS = ["regime","act","width","seedA","seedB","dnorm","lam_max",
 _DONE = None
 
 def _seek_csv(name):
-    """tim file CSV theo ten: uu tien dataset da biet, roi quet /kaggle/input, roi cwd."""
+    """Find a CSV by name: the known dataset first, then the input mount, then cwd."""
     p = os.path.join(DATA_ROOT, name)
     if os.path.exists(p): return p
     for c in sorted(glob.glob("/kaggle/input/**/" + name, recursive=True)):
@@ -390,7 +383,7 @@ def _sanitize_csv():
         log(f"[resume] bo {len(lines)-len(keep)} dong hong/loi -> se chay lai cac cap do")
 
 def restore_csv():
-    """RIENG CUA BAN NAY: keo CSV cu tu dataset (read-only) ve OUT_DIR de done() thay."""
+    """Copy an existing CSV out of the read-only dataset into OUT_DIR so done() sees it."""
     if not os.path.exists(OUT_CSV):
         for name in [OUT_NAME] + ALT_NAMES:
             src = _seek_csv(name)
@@ -399,13 +392,13 @@ def restore_csv():
                     shutil.copy(src, OUT_CSV); log(f"[resume] khoi phuc CSV tu {src}")
                     break
                 except Exception as e:
-                    log(f"[resume] copy that bai ({e!r}) -> chay tu dau")
+                    log(f"[resume] copy failed ({e!r}) -> starting from scratch")
     _sanitize_csv()
     if os.path.exists(OUT_CSV):
         n = max(sum(1 for _ in open(OUT_CSV)) - 1, 0)
         log(f"[resume] {OUT_CSV}: {n} dong du lieu san co")
     else:
-        log(f"[resume] khong tim thay CSV cu -> chay tu dau (binh thuong neu lan dau)")
+        log(f"[resume] no existing CSV -> starting from scratch (normal on a first run)")
 
 def _load_done():
     global _DONE
@@ -443,19 +436,19 @@ def run():
     left = sum(1 for a in ACTS for w in WIDTHS
                for (i, j) in list(itertools.combinations(range(NSEEDS), 2))[:PAIRS]
                if not done(REGIMES[0], a, w, i, j))
-    log(f"[resume] uoc tinh con {left}/{tot} cap chua chay")
+    log(f"[resume] roughly {left}/{tot} pairs still to run")
     for regime in REGIMES:
         for act in ACTS:
             for w in WIDTHS:
-                # --- RIENG CUA BAN NAY: bo qua o da xong TRUOC khi load .pt ---
+                # --- skip finished cells before loading any .pt ---
                 avail = [s for s in range(NSEEDS) if find_ckpt(regime, act, w, s) is not None]
                 if len(avail) < 2:
-                    log(f"  [{regime}/{act}/w{w}] <2 ckpt -> bo"); continue
+                    log(f"  [{regime}/{act}/w{w}] fewer than 2 checkpoints -> skip"); continue
                 pairs = list(itertools.combinations(range(len(avail)), 2))[:PAIRS]
                 if RESUME and all(done(regime, act, w, i, j) for (i, j) in pairs):
-                    log(f"  [{regime}/{act}/w{w}] da xong ca {len(pairs)} cap -> bo qua"); continue
+                    log(f"  [{regime}/{act}/w{w}] all {len(pairs)} pairs done -> skipping"); continue
                 if out_of_time():
-                    log(f"[budget] het {BUDGET_H}h -> dung sach. Save Version roi chay lai de tiep."); return
+                    log(f"[budget] {BUDGET_H}h reached -> stopping cleanly. Rerun to continue."); return
                 log(f"=== {regime}/{act}/w{w} ===")
                 sds = [load_sd(find_ckpt(regime, act, w, s)) for s in avail]
                 ref = build_net(w, act, regime).to(DEVICE).eval()
@@ -465,7 +458,7 @@ def run():
                 for (i, j) in pairs:
                     if RESUME and done(regime, act, w, i, j): continue
                     if out_of_time():
-                        log(f"[budget] het {BUDGET_H}h -> dung sach. Save Version roi chay lai de tiep.")
+                        log(f"[budget] {BUDGET_H}h reached -> stopping cleanly. Rerun to continue.")
                         del sds; return
                     t0 = time.time()
                     try:
@@ -497,7 +490,7 @@ def run():
 COLS3 = ["devrel_1e-1","devrel_1e-2","devrel_1e-3"]
 
 def _slope(s, c):
-    """tra ve (so mu duong = co theo width, R^2). NaN neu <3 diem."""
+    """Returns (exponent, R^2); positive means growing with width. NaN below 3 points."""
     s = s.dropna(subset=[c])
     if len(s) < 3: return float("nan"), float("nan")
     b, a = np.polyfit(np.log(s.width), np.log(s[c]), 1)
@@ -507,7 +500,7 @@ def _slope(s, c):
     return -b, r2
 
 def _pair_drops(d):
-    """so mu tinh RIENG cho tung cap -> do tut la hieu ung TRONG-cap, it nhieu."""
+    """Exponent fitted per pair, so the drop is a within-pair effect and less noisy."""
     out = []
     d = d.copy(); d["pair"] = d.seedA.astype(str) + "-" + d.seedB.astype(str)
     for (act, pr), s in d.groupby(["act", "pair"]):
@@ -531,14 +524,14 @@ def report():
 
     W = 74
     print("\n" + "=" * W)
-    print(f" QUET DAMPING 3 BAC -- CHE DO {RG.upper()} / MLP     ({len(d)} cap, {g.shape[0]} o)")
+    print(f" THREE-DECADE DAMPING SWEEP -- {RG.upper()} / MLP     ({len(d)} pairs, {g.shape[0]} cells)")
     ncell_full = len(ACTS)*len(WIDTHS)
     if g.shape[0] < ncell_full:
-        print(f" !! MOI CO {g.shape[0]}/{ncell_full} o -- bao cao nay la SO BO, chua ket luan duoc")
+        print(f" !! only {g.shape[0]}/{ncell_full} cells so far -- this report is preliminary")
     print("=" * W)
 
-    # ---------- (1) bang so mu ----------
-    print("\n(1) SO MU dev_rel THEO WIDTH  (duong = co theo width)")
+    # ---------- (1) exponent table ----------
+    print("\n(1) dev_rel EXPONENT IN WIDTH  (positive = grows with width)")
     print(f"{'act':<10}{'lam=1e-1':>16}{'lam=1e-2':>16}{'lam=1e-3':>16}{'spread':>10}")
     print("-" * W)
     spreads = []; signflip = []
@@ -551,19 +544,19 @@ def report():
         print(f"{act:<10}" + "".join(f"{v[i]:>9.3f}(R2{r[i]:.2f})" for i in range(3)) + f"{sp:>10.3f}")
     print("-" * W)
     mx = np.nanmax(spreads) if spreads else float("nan")
-    print(f"spread LON NHAT trong mot hang: {mx:.3f}")
+    print(f"largest spread within a row: {mx:.3f}")
 
-    # ---------- (2) do tut theo tung cap ----------
+    # ---------- (2) per-pair drop ----------
     pd_rows = _pair_drops(d)
-    print(f"\n(2) DO TUT so mu (lam 1e-1 -> 1e-3), tinh RIENG tung cap")
+    print(f"\n(2) EXPONENT DROP (lam 1e-1 -> 1e-3), fitted per pair")
     if len(pd_rows) < 2:
-        print("    khong du cap de thong ke"); dm = ds = float("nan")
+        print("    not enough pairs for statistics"); dm = ds = float("nan")
     else:
         dr = np.array([r["drop"] for r in pd_rows])
         e1 = np.array([r["e1"] for r in pd_rows]); e3 = np.array([r["e3"] for r in pd_rows])
         dm, ds = float(dr.mean()), float(dr.std(ddof=1))
-        print(f"    {RG.upper():<9} drop = {dm:+.3f} +- {ds:.3f}   (n={len(dr)} cap, cung dau: {int((dr>0).sum())}/{len(dr)})")
-        print(f"    NTK       drop = {NTK_DROP_MEAN:+.3f} +- {NTK_DROP_SD:.3f}   (n=12 cap, cung dau: 12/12)  <- tham chieu")
+        print(f"    {RG.upper():<9} drop = {dm:+.3f} +- {ds:.3f}   (n={len(dr)} pairs, same sign: {int((dr>0).sum())}/{len(dr)})")
+        print(f"    NTK       drop = {NTK_DROP_MEAN:+.3f} +- {NTK_DROP_SD:.3f}   (n=12 pairs, same sign: 12/12)  <- reference")
         import collections
         sds_in = []
         by = collections.defaultdict(list)
@@ -571,26 +564,26 @@ def report():
         for a, vv in by.items():
             if len(vv) > 1: sds_in.append(np.std(vv, ddof=1))
         if sds_in:
-            print(f"    nhieu giua cac cap trong cung lambda: sd ~ {np.mean(sds_in):.3f}"
-                  f"   -> do tut lon gap ~{abs(dm)/max(np.mean(sds_in),1e-9):.0f}x nhieu")
+            print(f"    pair-to-pair noise at fixed lambda: sd ~ {np.mean(sds_in):.3f}"
+                  f"   -> the drop is about {abs(dm)/max(np.mean(sds_in),1e-9):.0f}x that noise")
 
-    # ---------- (3) co che ----------
-    print("\n(3) CO CHE: gia tri rieng hieu dung mu_eff ma CG 'nhin thay' doc ve phai")
-    print("    (giai tu devrel = A/(lam+mu);  in ra mu_eff / lam(1e-2))")
+    # ---------- (3) mechanism ----------
+    print("\n(3) MECHANISM: the effective eigenvalue mu_eff that CG sees on the right-hand side")
+    print("    (solved from devrel = A/(lam+mu); printed as mu_eff / lam at 1e-2)")
     l1 = g.Fop*LAM_RELS[0]; l3 = g.Fop*LAM_RELS[2]
     rr = g["devrel_1e-3"]/g["devrel_1e-1"]
     g["mu"] = (l1 - rr*l3)/(rr - 1)
     g["mu_rel"] = g["mu"]/(g.Fop*LAM_RELS[1])
     piv = g.pivot_table(index="width", columns="act", values="mu_rel")
     print(piv.round(2).to_string())
-    print("    >1 = F chi phoi phep giai   |   <1 = damping chi phoi")
+    print("    >1 = F dominates the solve   |   <1 = the damping dominates")
     for act, s in g.groupby("act"):
         s = s.dropna(subset=["mu_rel"]); s = s[s.mu_rel > 0]
         if len(s) >= 3:
             sl = np.polyfit(np.log(s.width), np.log(s.mu_rel), 1)[0]
             print(f"      {act:<10} mu_eff/lam  ~ n^{sl:+.2f}")
 
-    # ---------- (4) so voi NTK truc tiep neu tim thay file ----------
+    # ---------- (4) direct comparison with ntk, if the file is present ----------
     for nm in NTK_REF_NAMES:
         src = _seek_csv(nm)
         if not src or os.path.abspath(src) == os.path.abspath(OUT_CSV): continue
@@ -600,56 +593,56 @@ def report():
             dnr = _pair_drops(dn)
             if dnr:
                 a = np.array([r["drop"] for r in dnr])
-                print(f"\n    [doc truc tiep {src}] NTK drop = {a.mean():+.3f} +- {a.std(ddof=1):.3f} (n={len(a)})")
+                print(f"\n    [read directly from {src}] NTK drop = {a.mean():+.3f} +- {a.std(ddof=1):.3f} (n={len(a)})")
             break
         except Exception as e:
-            print(f"    (khong doc duoc {src}: {e!r})")
+            print(f"    (could not read {src}: {e!r})")
 
     # ---------- (5) verdict ----------
     print("\n" + "=" * W)
-    print(" KET LUAN")
+    print(" CONCLUSION")
     print("=" * W)
     if signflip:
-        print(f" !! DOI DAU SO MU theo damping o: {signflip}")
-        print("    Voi cac o nay, dau cua alpha_devrel KHONG xac dinh -> vi tri cua chung")
-        print("    tren truc hoanh Figure 1 phu thuoc lambda. PHAI xu ly rieng: hoac bo")
-        print("    khoi hoi quy, hoac bao cao ca dai. Day la loi nang nhat co the gap.")
+        print(f" !! the exponent changes sign with damping at: {signflip}")
+        print("    For these cells the sign of alpha_devrel is undetermined, so their")
+        print("    position on the horizontal axis depends on lambda. They must be handled")
+        print("    separately: dropped from the regression, or reported as a range.")
     else:
-        print(" [OK] DAU so mu on dinh qua ca 3 bac damping cho moi hang.")
-        print("      Claim dinh tinh (devrel co / tang theo width) khong phu thuoc damping.")
+        print(" [OK] the sign of the exponent is stable across all three decades of damping.")
+        print("      The qualitative claim (devrel shrinks or grows with width) does not depend on damping.")
 
     if not np.isnan(dm):
         diff = abs(dm - NTK_DROP_MEAN)
         if RG == "ntk":
-            print(f"\n Tai lap ban NTK cu: |{dm:+.3f} - {NTK_DROP_MEAN:+.3f}| = {diff:.3f}")
-            print(" (day la che do tham chieu, so sanh nay chi de kiem tra tai lap)")
+            print(f"\n Reproducing the earlier ntk run: |{dm:+.3f} - {NTK_DROP_MEAN:+.3f}| = {diff:.3f}")
+            print(" (this is the reference regime; the comparison only checks reproduction)")
         else:
-            print(f"\n Lech offset so voi NTK: |{dm:+.3f} - {NTK_DROP_MEAN:+.3f}| = {diff:.3f}")
+            print(f"\n Offset against ntk: |{dm:+.3f} - {NTK_DROP_MEAN:+.3f}| = {diff:.3f}")
         if diff < 0.10:
-            print(" => OFFSET CHUNG. Damping dich MOI o gan nhu cung mot luong.")
-            print("    R^2 cua hoi quy alpha_B ~ alpha_devrel BAT BIEN CHINH XAC duoi phep")
-            print("    tinh tien chung cua bien hoi quy -> ket qua phu dinh R^2=0.11 an toan.")
-            print("    Viet vao phu luc: 'do tut do damping la offset chung giua cac che do")
-            print("    (NTK %.3f, %s %.3f), nen khong tao/pha tuong quan giua cac o'."
+            print(" => COMMON OFFSET. Damping moves every cell by nearly the same amount.")
+            print("    The R^2 of alpha_B ~ alpha_devrel is exactly invariant under a shared")
+            print("    translation of the regressor, so the negative result is safe.")
+            print("    For the appendix: 'the damping drop is a common offset across regimes")
+            print("    (ntk %.3f, %s %.3f), so it neither creates nor destroys correlation'."
                   % (NTK_DROP_MEAN, RG.upper(), dm))
         elif diff < 0.25:
-            print(" => OFFSET LECH VUA. Phai tinh lai R^2 voi alpha_devrel do o CUNG mot")
-            print("    lambda cho moi o (dieu nay von da dung neu moi o deu dung lam=1e-2),")
-            print("    va bao cao do nhay nay trong phu luc. Chua sup nhung khong con sach.")
+            print(" => MODERATE OFFSET. R^2 must be recomputed with alpha_devrel measured at")
+            print("    the same lambda for every cell (already the case if all use lam=1e-2),")
+            print("    and this sensitivity reported in the appendix.")
         else:
-            print(" => OFFSET KHONG CHUNG. Damping dich cac che do KHAC nhau dang ke.")
-            print("    Lap luan 'tinh tien chung -> R^2 bat bien' KHONG dung nua.")
-            print("    Phai phat bieu lai ket qua devrel trong Figure 1: bao cao no nhu mot")
-            print("    dai phu thuoc lambda, hoac bo devrel khoi hoi quy va giu no thuan tuy")
-            print("    la phep do dinh tinh cua Muc 5.1 (dau + don dieu).")
-    print("\n Ba ket qua chinh (rho*, R = B/[1/4 Delta^T F Delta], do dai Fisher) KHONG dung")
-    print(" G_F^{-1} nen khong bi bat ky ket luan nao o tren dung toi.")
+            print(" => OFFSET NOT COMMON. Damping moves the regimes by different amounts,")
+            print("    so the 'shared translation -> invariant R^2' argument no longer holds.")
+            print("    The dev_rel result must be restated: reported as a lambda-dependent")
+            print("    range, or dropped from the regression and kept as a qualitative")
+            print("    measurement (sign and monotonicity) only.")
+    print("\n The three main results (rho*, R = B/[1/4 Delta^T F Delta], Fisher length) do")
+    print(" not use G_F^{-1}, so none of the above touches them.")
     print("=" * W)
 
 if __name__ == "__main__":
-    log(f"=== lambda sweep: {REGIMES[0].upper()} / MLP / {PAIRS} cap / lambda in {LAM_RELS} ===")
+    log(f"=== lambda sweep: {REGIMES[0].upper()} / MLP / {PAIRS} pairs / lambda in {LAM_RELS} ===")
     restore_csv()
     self_test()
     run()
     report()
-    log(f"XONG (tong {(time.time()-T_START)/60:.1f} phut). Nho Save Version de giu {os.path.basename(OUT_CSV)}.")
+    log(f"DONE ({(time.time()-T_START)/60:.1f} min). Keep {os.path.basename(OUT_CSV)}.")

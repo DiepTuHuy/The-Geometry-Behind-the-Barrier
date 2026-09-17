@@ -1,66 +1,64 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- measure_profile_shape.py -- HINH DANG: do lech trac dia xi(t) DOC CA DUONG
-                             o CA BA CHE DO (ntk / sp / mup)
-============================================================================
-     python measure_profile_shape.py               # MODE=mlp (mac dinh)
+"""Shape: the geodesic deviation xi(t) along the whole path, all regimes.
+
+     python measure_profile_shape.py               # MODE=mlp (default)
      MODE=cnn python measure_profile_shape.py
      MODE=all python measure_profile_shape.py
 
-VA DAU KHUYET NAO
------------------
-result-1/param_geo_{mode}.csv DA co dev_rel o ca 3 che do, nhung dev_rel la
-MOT so: sup_t ||xi(t)|| / ||Delta||. No noi cai buou CAO bao nhieu, khong noi
-cai buou NAM O DAU va CO DOI XUNG KHONG.
-File nay ghi ca duong xi(t), roi rut ra ba dai luong hinh dang:
+What was missing
+----------------
+param_geo_{mode}.csv already carries dev_rel in all three regimes, but dev_rel
+is a single number: sup_t ||xi(t)|| / ||Delta||. It says how high the bump is,
+not where it sits or whether it is symmetric. This file records the whole curve
+xi(t) and extracts three shape quantities:
 
-    xirel(t) = ||xi(t)|| / ||Delta||        <- bien do, so sanh duoc giua cac o
-    shape(t) = ||xi(t)|| / sup_s||xi(s)||   <- DANG THUAN TUY, dinh = 1
-    t_peak   = argmax_t ||xi(t)||           <- buou lech ve phia nao
-    skew     = (t_peak - 1/2) * 2           <- in [-1,1], 0 la doi xung
+    xirel(t) = ||xi(t)|| / ||Delta||        amplitude, comparable across cells
+    shape(t) = ||xi(t)|| / sup_s ||xi(s)||  pure shape, peak = 1
+    t_peak   = argmax_t ||xi(t)||           which way the bump leans
+    skew     = (t_peak - 1/2) * 2           in [-1,1], 0 is symmetric
 
-Mo hinh do choi cua Bo de 4.10 (fig0/fig6 panel a) cho buou DOI XUNG dinh dung
-t=1/2 khi Gamma khong doi doc duong. Do that ma lech khoi 1/2 nghia la truong
-Christoffel KHONG deu -- do la thong tin moi, khong doc duoc tu dev_rel.
+The toy model behind the Poincare-Sobolev lemma gives a symmetric bump peaking
+exactly at t=1/2 when Gamma is constant along the path. A measured peak away
+from 1/2 therefore means the Christoffel field is not uniform -- which is new
+information, not readable from dev_rel.
 
-CONG THUC (dong nhat measure_geo.py)
-------------------------------------
+Formula (identical to the geodesic script)
+------------------------------------------
     xi(t) = int_0^1 G(t,s) Gamma(D,D)(gamma_lin(s)) ds
-    G(t,s) = s(1-t) neu s<=t,  t(1-s) neu s>=t
+    G(t,s) = s(1-t) for s <= t,  t(1-s) for s >= t
     dev_rel = sup_t ||xi(t)|| / ||D||
 
-TIET KIEM GPU -- DOC LAI FILE CHRISTOFFEL
-------------------------------------------
-xi(t) tinh tu Gamma(t), ma measure_profile_christoffel.py DA ghi san
-xinorm_t* vao profile_christoffel_{mode}.csv. Neu thay file do, script nay
-lay thang, KHONG dung GPU. Chi khi khong co no moi tu tinh Gamma.
+Reusing the Christoffel file saves the GPU work
+-----------------------------------------------
+xi(t) is built from Gamma(t), and measure_profile_christoffel.py already writes
+xinorm_t* into profile_christoffel_{mode}.csv. When that file is present this
+script reads it directly and uses no GPU; only without it does it compute Gamma
+itself.
 
-  => THU TU CHAY DE RE NHAT:
-       1) measure_profile_christoffel.py   (nang -- tinh Gamma, chia SHARD=0..5)
-       2) measure_profile_shape.py         (gan nhu tuc thi -- doc lai)
-       3) measure_profile_length.py        (nhe, doc lap)
-     Chay nguoc lai van dung, chi ton them ~1 lan tinh Gamma.
+  => cheapest order to run:
+       1) measure_profile_christoffel.py   (heavy: computes Gamma, SHARD=0..5)
+       2) measure_profile_shape.py         (near-instant: reads it back)
+       3) measure_profile_length.py        (light, independent)
+     The reverse order is still correct, it just pays for Gamma once more.
 
-CHUA CHAY CHRISTOFFEL THI SAO? Van chay duoc: khong thay CSV do, file nay tu
-tinh Gamma. Nhung luc do no NANG NGANG file Christoffel, nen hay dung SHARD
-=0..5 giong het (xem docstring file kia). Dung ca hai theo cach nay la tinh
-Gamma HAI LAN -- chay file Christoffel truoc van la duong re nhat.
+Without the Christoffel file this script still runs and computes Gamma itself,
+but is then as heavy as that file, so use the same SHARD=0..5 split. Run this
+way both files compute Gamma, which is why running Christoffel first is cheapest.
 
-PAIRS mac dinh = 3, KHOP voi file Christoffel. Neu de PAIRS=10 o day ma file
-kia chi chay 3 cap thi 7 cap con lai phai tu tinh Gamma -- rat dat.
+PAIRS defaults to 3 to match the Christoffel file. Setting PAIRS=10 here while
+that file ran 3 pairs means the remaining 7 must compute Gamma themselves, which
+is expensive.
 
-Dat REUSE=0 de ep tu tinh lai (dung khi muon kiem tra doc lap).
+REUSE=0 forces recomputation, for an independent check.
 
-NEO VAO SO CU: doi chieu dev_rel vua tinh voi cot dev_rel trong
-result-1/param_geo_{mode}.csv (lam_rel=1e-2). Phai trung.
+Cross-check: the dev_rel computed here is compared against the dev_rel column of
+param_geo_{mode}.csv at lam_rel=1e-2. They must agree.
 
-OUTPUT
+Output
 ------
-  profile_shape_{mode}.csv        theo tung cap, resumable
-  profile_shape_{mode}_cell.csv   median theo o
-============================================================================
+  profile_shape_{mode}.csv        one row per pair, resumable
+  profile_shape_{mode}_cell.csv   per-cell medians
 """
 import os, sys, time, math, glob, shutil, itertools, traceback, zipfile, io
 try:
@@ -71,18 +69,19 @@ import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
 
-# ======================= THAM SO (dong nhat measure_geo.py) =================
+# ======================= PARAMETERS (as in the geodesic script) =============
 MODE      = os.environ.get("MODE", "mlp")
-REGIMES   = ["ntk", "sp", "mup"]                   # <<< CA BA CHE DO
+REGIMES   = ["ntk", "sp", "mup"]
 ACTS      = ["gelu", "tanh", "swish", "softplus"]
 NSEEDS    = 5
 
-# PAIRS=3 de KHOP voi measure_profile_christoffel.py. Neu de 10 o day ma file
-# Christoffel chi chay 3, thi 7 cap con lai se phai tu tinh Gamma -- rat dat.
+# PAIRS=3 matches measure_profile_christoffel.py. Setting 10 here while that
+# file ran 3 means the other 7 pairs must compute Gamma themselves, which is
+# expensive.
 PAIRS     = int(os.environ.get("PAIRS", "3"))
 
-# Chia manh giong file Christoffel (chi can khi REUSE=0, luc do file nay cung
-# phai tu tinh Gamma nen nang ngang no).
+# Sharded like the Christoffel file. Only needed with REUSE=0, where this file
+# computes Gamma itself and is just as heavy.
 SHARD      = os.environ.get("SHARD")
 SHARD_PLAN = {0: ("ntk", ["gelu","tanh"]), 1: ("ntk", ["swish","softplus"]),
               2: ("sp",  ["gelu","tanh"]), 3: ("sp",  ["swish","softplus"]),
@@ -388,22 +387,22 @@ def self_test():
     g_vp, _, _ = christoffel_dd(m, p, b, x, delta, lam, micro=8)
     CG_ITERS, CG_TOL = oi, ot
     rel = float((flat(g_vp) - g_dense).norm()/max(g_dense.norm(), 1e-12))
-    assert rel < 1e-6, f"Gamma sai {rel:.2e}"
+    assert rel < 1e-6, f"Gamma mismatch: {rel:.2e}"
     ts = np.linspace(0, 1, 21); G = green_matrix(list(ts)); dt = ts[1]-ts[0]
     xi = (G @ torch.full((len(ts),), 0.7, dtype=torch.float64))*dt
     ge = float((xi - torch.tensor([0.7*t*(1-t)/2 for t in ts])).abs().max())
-    assert ge < 1e-10, f"Green sai {ge:.2e}"
-    # dang chuan hoa cua buou deu phai la 4t(1-t), dinh 1 tai t=1/2
+    assert ge < 1e-10, f"Green quadrature mismatch: {ge:.2e}"
+    # the normalised shape of a uniform bump must be 4t(1-t), peaking at t=1/2
     sh = np.array([float(v) for v in xi]); sh = sh/sh.max()
     ref = np.array([4*t*(1-t) for t in ts])
-    assert np.abs(sh - ref).max() < 1e-10, "shape(t) chuan hoa sai"
+    assert np.abs(sh - ref).max() < 1e-10, "normalised shape(t) is wrong"
     log(f"  [self-test] OK  Gamma rel={rel:.2e}  Green err={ge:.2e}  shape=4t(1-t) OK")
     torch.set_default_dtype(old)
 
 # ------------------------------------------------------------------ CKPT
 def _diagnose(tag):
-    """Noi THANG vi sao khong thay ckpt, thay vi de vong lap keu '<2 ckpt' hang chuc lan."""
-    log(f"[ckpt] !! KHONG THAY thu muc 'ckpt_{tag}' nao chua file .pt.")
+    """Say plainly why no checkpoint was found, instead of repeating '<2 ckpt' dozens of times."""
+    log(f"[ckpt] !! no 'ckpt_{tag}' directory containing .pt files was found.")
     seen, n_pt, zips = set(), 0, []
     for root in CKPT_ROOTS:
         if not root or not os.path.isdir(root): continue
@@ -413,31 +412,31 @@ def _diagnose(tag):
                 if   fn.endswith(".pt"):  n_pt += 1
                 elif fn.endswith(".zip"): zips.append(os.path.join(dp, fn))
     cand = sorted(d for d in seen if "ckpt" in d.lower())
-    log(f"[ckpt]    dang quet: {[r for r in CKPT_ROOTS if r and os.path.isdir(r)]}")
-    for root in CKPT_ROOTS:                      # cho thay THUC TE co gi trong do
+    log(f"[ckpt]    scanning: {[r for r in CKPT_ROOTS if r and os.path.isdir(r)]}")
+    for root in CKPT_ROOTS:                      # show what is actually there
         if not root or not os.path.isdir(root): continue
         try: top = sorted(os.listdir(root))[:12]
         except OSError: top = []
-        log(f"[ckpt]      {root}  ->  {top or 'RONG'}")
-    log(f"[ckpt]    thu muc co chu 'ckpt': {cand or 'KHONG CO'}")
-    log(f"[ckpt]    tong file .pt (o bat ky dau): {n_pt}")
+        log(f"[ckpt]      {root}  ->  {top or 'empty'}")
+    log(f"[ckpt]    directories containing 'ckpt': {cand or 'none'}")
+    log(f"[ckpt]    total .pt files found anywhere: {n_pt}")
     if zips:
-        log(f"[ckpt]    da QUET CA .zip: {[os.path.basename(z) for z in zips[:3]]} "
-            f"-- nhung khong co .pt nao hop voi ckpt_{tag}")
+        log(f"[ckpt]    .zip archives were scanned too: {[os.path.basename(z) for z in zips[:3]]} "
+            f"-- but none holds a .pt matching ckpt_{tag}")
     if n_pt and not cand:
-        log(f"[ckpt]    -> Co file .pt nhung KHONG nam trong thu muc ten 'ckpt_{tag}'.")
+        log(f"[ckpt]    -> .pt files exist but none sits in a directory named 'ckpt_{tag}'.")
     if cand and f"ckpt_{tag}" not in cand:
-        log(f"[ckpt]    -> Ten thu muc SAI. Can dung: 'ckpt_{tag}'")
+        log(f"[ckpt]    -> wrong directory name; it must be 'ckpt_{tag}'")
     if os.path.isdir("/kaggle/input") and not os.listdir("/kaggle/input"):
-        log(f"[ckpt]    -> /kaggle/input RONG: notebook CHUA duoc gan dataset nao.")
-        log(f"[ckpt]    -> Kaggle: nut 'Add Input' (ben phai) -> chon dataset chua ckpt_{tag}/")
-    log(f"[ckpt]    Cau truc dung: <bat ky>/ckpt_{tag}/{{regime}}_{{act}}_w{{w}}_s{{s}}.pt")
+        log(f"[ckpt]    -> /kaggle/input is empty: no dataset is attached to this notebook.")
+        log(f"[ckpt]    -> attach the dataset holding ckpt_{tag}/ as an input.")
+    log(f"[ckpt]    expected layout: <anything>/ckpt_{tag}/{{regime}}_{{act}}_w{{w}}_s{{s}}.pt")
 
 _IDX = {}
 _ZCACHE = {}
 
 def _zopen(p):
-    """Giu handle .zip mo san -- moi lan mo lai phai doc lai central directory."""
+    """Keep .zip handles open: reopening re-reads the central directory each time."""
     if p not in _ZCACHE: _ZCACHE[p] = zipfile.ZipFile(p)
     return _ZCACHE[p]
 
@@ -448,12 +447,13 @@ def _index_dir(root, tag, idx):
             if fn.endswith(".pt"): idx.setdefault(fn, os.path.join(dp, fn))
 
 def _index_zip(zpath, tag, idx):
-    """Doc .pt THANG TU TRONG .zip -- khong giai nen ra dia (do 12 GB dia trong).
+    """Read .pt directly out of a .zip, without extracting to disk.
 
-    Chap nhan hai kieu zip:
-      (a) co duong dan .../ckpt_{tag}/xxx.pt  -> chi lay dung tag nay
-      (b) zip PHANG, chi toan .pt             -> lay het (zip 1 regime kieu ntk.zip)
-    Neu zip chi chua ckpt_ cua kien truc KHAC -> bo qua, khong lay nham.
+    Two archive layouts are accepted:
+      (a) paths of the form .../ckpt_{tag}/xxx.pt  -> only this tag is taken
+      (b) a flat archive of .pt files             -> all of them (e.g. ntk.zip)
+    An archive holding only ckpt_ of another architecture is skipped, so nothing
+    is picked up by mistake.
     """
     try:
         z = _zopen(zpath)
@@ -465,11 +465,11 @@ def _index_zip(zpath, tag, idx):
         other  = any("/ckpt_" in norm(n) for n in names)
         use    = scoped if scoped else ([] if other else names)
         if not use and other:
-            log(f"[ckpt]    (bo qua {os.path.basename(zpath)}: chi chua ckpt_ cua kien truc khac)")
+            log(f"[ckpt]    (skipping {os.path.basename(zpath)}: it only holds ckpt_ of another architecture)")
         for n in use: idx.setdefault(os.path.basename(n), ("zip", zpath, n))
         return len(use), nested
     except Exception as e:
-        log(f"[ckpt] !! khong doc duoc {zpath}: {e!r}")
+        log(f"[ckpt] !! could not read {zpath}: {e!r}")
         return 0, []
 
 def _build_index(tag):
@@ -477,19 +477,19 @@ def _build_index(tag):
     idx = {}; zips = []
     for root in CKPT_ROOTS:
         if not root or not os.path.isdir(root): continue
-        _index_dir(root, tag, idx)                       # thu muc da giai nen: uu tien
+        _index_dir(root, tag, idx)                       # already-extracted directories win
         for dp, _, fns in os.walk(root):
             zips += [os.path.join(dp, f) for f in fns if f.endswith(".zip")]
     n_zip = 0; nested = []
-    # dedup theo duong dan THAT: cac CKPT_ROOTS long nhau se thay cung mot zip
-    # duoi hai ten khac nhau ("kinput/a.zip" vs "./kinput/a.zip").
+    # Deduplicate by real path: nested CKPT_ROOTS see the same archive under two
+    # names ("kinput/a.zip" vs "./kinput/a.zip").
     for zp in sorted({os.path.realpath(z) for z in zips}):
         k, nz = _index_zip(zp, tag, idx); n_zip += k; nested += nz
     _IDX[tag] = idx
-    log(f"[ckpt] ckpt_{tag}: tim thay {len(idx)} file .pt"
-        + (f"  ({n_zip} doc thang tu .zip)" if n_zip else ""))
+    log(f"[ckpt] ckpt_{tag}: found {len(idx)} .pt files"
+        + (f"  ({n_zip} read straight from .zip)" if n_zip else ""))
     if nested:
-        log(f"[ckpt] !! co .zip LONG TRONG .zip ({nested[:2]}) -- giai nen bot mot lop:")
+        log(f"[ckpt] !! nested .zip inside .zip ({nested[:2]}) -- unpack one layer first:")
         log(f"[ckpt]    !unzip -q '/kaggle/input/<ten>/*.zip' -d /kaggle/working/ckpt")
     if not idx:
         _diagnose(tag)
@@ -512,15 +512,15 @@ def load_sd(src):
     return d["sd"], d.get("acc")
 
 # ------------------------------------------------------------------ TRAIN (chi khi THIEU ckpt)
-# CHEP NGUYEN config cua param_{mode}_v2_shard*.py -- KE CA CONG THUC SEED.
-# Sai mot chi tiet la mang train ra KHAC mang goc, va so do duoc se khong con
-# ghep duoc voi param_geo_*.csv (anchor_check se bao lech).
+# Copied verbatim from the training scripts, including the seed formula. One
+# detail wrong and the network trained here differs from the original, and the
+# measurement no longer matches param_geo_*.csv (anchor_check would report it).
 TRAIN        = os.environ.get("TRAIN", "1") == "1"      # TRAIN=0 de tat han
 TRAIN_SEED_BASE = 4321
-TRAIN_ACTS   = ["relu","gelu","tanh","swish","softplus"]  # PHAI giu ca relu:
-                                                          # seed phu thuoc chi so trong DANH SACH NAY
+TRAIN_ACTS   = ["relu","gelu","tanh","swish","softplus"]  # relu must stay: the seed
+                                                          # depends on the index in this list
 TRAIN_LR, TRAIN_BATCH, TRAIN_WARMUP, TRAIN_CLIP = 0.1, 256, 8, 1.0
-TRAIN_EPOCHS = {"mlp": 30, "cnn": 100, "ts": 100}         # khac nhau theo kien truc
+TRAIN_EPOCHS = {"mlp": 30, "cnn": 100, "ts": 100}         # per architecture
 
 def set_seed(s): np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
 
@@ -551,7 +551,7 @@ def _train_xy(mode, train=True):
     _C[key] = (X, Y); return X, Y
 
 def train_one(mode, tag, regime, act, w, s):
-    """Train DUNG mot mang nhu ban goc, luu .pt, va ghi thang vao index."""
+    """Train exactly the original network, save the .pt, and register it in the index."""
     cfg = _MODE_CFG[mode]; ep = TRAIN_EPOCHS[mode]
     set_seed(TRAIN_SEED_BASE + REGIMES.index(regime)*100000
              + cfg["widths"].index(w)*100 + TRAIN_ACTS.index(act)*7 + s)
@@ -559,7 +559,7 @@ def train_one(mode, tag, regime, act, w, s):
     X, Y = _train_xy(mode, True)
     w0 = torch.cat([p.detach().reshape(-1) for p in m.parameters()]).clone()
     opt = torch.optim.SGD(m.opt_groups(TRAIN_LR), momentum=0.9)
-    wu = min(TRAIN_WARMUP, max(1, ep//5))          # warmup tuyen tinh -> cosine
+    wu = min(TRAIN_WARMUP, max(1, ep//5))          # linear warmup, then cosine decay
     def _ll(e):
         if e < wu: return (e+1)/wu
         pr = (e-wu)/max(ep-wu, 1); return 0.5*(1.0 + math.cos(math.pi*pr))
@@ -586,13 +586,13 @@ def train_one(mode, tag, regime, act, w, s):
     fn = f"{regime}_{act}_w{w}_s{s}.pt"
     path = os.path.join(ckpt_dir(tag), fn)
     torch.save({"sd": sd, "acc": acc, "dF": None, "wmove": wmove}, path)
-    _IDX.setdefault(tag, {})[fn] = path        # dang ky ngay, khoi quet lai
+    _IDX.setdefault(tag, {})[fn] = path        # register at once, so no rescan is needed
     del m
     if DEVICE == "cuda": torch.cuda.empty_cache()
     return sd, acc
 
 def load_or_train(mode, tag, regime, act, w, want):
-    """Nap ckpt; thieu thi TRAIN roi nap. Tra ve (sds, accs, got) theo dung thu tu seed."""
+    """Load checkpoints, training any that are missing. Returns (sds, accs, got) in seed order."""
     def _scan():
         sds = []; accs = []; got = []
         for s in range(NSEEDS):
@@ -646,24 +646,25 @@ def restore_csv(path, name):
         src = _seek_csv(name)
         if src and os.path.abspath(src) != os.path.abspath(path):
             try: shutil.copy(src, path); log(f"[resume] khoi phuc CSV tu {src}")
-            except Exception as e: log(f"[resume] copy that bai ({e!r}) -> chay tu dau")
-    # CSV cu phai co DUNG bo cot cua lan chay nay. Doi TGRID (hoac LAM_REL) la
-    # doi so cot -> noi tiep vao se ra file rang cua, pandas doc hong. Gap thi
-    # doi ten file cu di roi chay lai tu dau, con hon lam hong so da co.
+            except Exception as e: log(f"[resume] copy failed ({e!r}) -> starting from scratch")
+    # An existing CSV must carry exactly this run's columns. Changing TGRID (or
+    # LAM_REL) changes their number, so appending would produce a ragged file
+    # that pandas cannot read. In that case the old file is renamed and the run
+    # starts over, rather than corrupting data already collected.
     if os.path.exists(path):
         head = open(path).readline().strip()
         if head and head != ",".join(COLS()):
             bak = path + ".oldcols.bak"
             os.replace(path, bak)
-            log(f"[resume] !! CSV cu co BO COT KHAC ({len(head.split(','))} cot, "
-                f"lan nay {len(COLS())} cot) -- TGRID/LAM_REL da doi?")
-            log(f"[resume] !! da doi ten thanh {bak} -> chay lai tu dau")
+            log(f"[resume] !! the existing CSV has a different column set "
+                f"({len(head.split(','))} vs {len(COLS())}) -- did TGRID/LAM_REL change?")
+            log(f"[resume] !! renamed it to {bak} -> starting from scratch")
     _sanitize(path)
     if os.path.exists(path):
         n = max(sum(1 for _ in open(path)) - 1, 0)
-        log(f"[resume] {path}: {n} dong du lieu san co")
+        log(f"[resume] {path}: {n} existing data rows")
     else:
-        log(f"[resume] chua co CSV cu -> CHAY TU DAU (binh thuong neu lan dau)")
+        log(f"[resume] no existing CSV -> starting from scratch (normal on a first run)")
 
 def load_done(path):
     done = set()
@@ -682,11 +683,11 @@ def write_row(path, row):
 
 # ------------------------------------------------------------------ DOC LAI FILE CHRISTOFFEL
 def load_reuse(mode):
-    """profile_christoffel_{mode}.csv da co xinorm_t* -> lay thang, khong ton GPU."""
+    """profile_christoffel_{mode}.csv already holds xinorm_t*: read it, no GPU needed."""
     if not REUSE: return {}
     src = _seek_csv(f"profile_christoffel_{mode}.csv")
     if not src:
-        log(f"[reuse] khong thay profile_christoffel_{mode}.csv -> se tu tinh Gamma"); return {}
+        log(f"[reuse] profile_christoffel_{mode}.csv not found -> computing Gamma here"); return {}
     import pandas as pd
     d = pd.read_csv(src); d = d[d.status.astype(str) == "ok"]
     xc = [f"xinorm_t{t:.3f}" for t in t_grid()]
@@ -700,7 +701,7 @@ def load_reuse(mode):
         out[key] = dict(xin=np.array([float(r[c]) for c in xc]), dnorm=float(r.dnorm),
                         cg_resid=r.get("cg_resid", ""), fd_instab=r.get("fd_instab", ""),
                         accA=r.get("accA", ""), accB=r.get("accB", ""))
-    log(f"[reuse] doc {len(out)} cap tu {src} -> khong can GPU cho nhung cap nay")
+    log(f"[reuse] read {len(out)} pairs from {src} -> no GPU needed for them")
     return out
 
 def _shape_row(mode, regime, act, w, i, j, xin, dn, src, cg="", fd="", aA="", aB=""):
@@ -723,7 +724,7 @@ def anchor_check(mode, path):
     import pandas as pd
     src = _seek_csv(f"param_geo_{mode}.csv") or os.path.join("result-1", f"param_geo_{mode}.csv")
     if not src or not os.path.exists(src):
-        log(f"[anchor] khong thay param_geo_{mode}.csv -> bo qua"); return
+        log(f"[anchor] param_geo_{mode}.csv not found -> skipping"); return
     old = pd.read_csv(src); old = old[old.status.astype(str) == "ok"]
     if "lam_rel" in old:
         old = old[pd.to_numeric(old.lam_rel, errors="coerce").round(6) == round(LAM_REL, 6)]
@@ -735,7 +736,7 @@ def anchor_check(mode, path):
         old[c] = pd.to_numeric(old[c], errors="coerce"); new[c] = pd.to_numeric(new[c], errors="coerce")
     m = new.merge(old[key + ["dev_rel"]].rename(columns={"dev_rel":"dev_rel_old"}), on=key, how="inner")
     if not len(m):
-        log("[anchor] khong khop cap nao -> bo qua"); return
+        log("[anchor] no pair matched -> skipping"); return
     a = pd.to_numeric(m["dev_rel"], errors="coerce"); b = pd.to_numeric(m["dev_rel_old"], errors="coerce")
     rel = ((a - b).abs()/b.abs().clip(lower=1e-30)).dropna()
     log(f"[anchor] doi chieu {len(m)} cap: dev_rel lech trung vi={rel.median():.3%} max={rel.max():.3%}")
@@ -752,7 +753,7 @@ def run_mode(mode):
 
     ts = t_grid(); G = green_matrix(ts); dt = ts[1]-ts[0]
     n_skip = 0
-    Xf = None                                    # chi nap du lieu khi that su phai tinh
+    Xf = None                                    # load data only if something must be computed
     log(f"=== MODE={mode} SHARD={SHARD if SHARD not in (None,'') else 'het'} cells={plan_cells()} widths={cfg['widths']} TGRID={TGRID} "
         f"lam_rel={LAM_REL:g} pairs={PAIRS} reuse={len(reuse)} DEVICE={DEVICE} -> {out}")
 
@@ -764,9 +765,9 @@ def run_mode(mode):
                     list(itertools.combinations(range(NSEEDS), 2))[:PAIRS]
                     if (regime, act, str(w), str(i), str(j)) not in done]
             if not want:
-                log(f"  [{regime}/{act}/w{w}] da xong -> bo qua"); continue
+                log(f"  [{regime}/{act}/w{w}] already done -> skipping"); continue
 
-            # ---- (A) cap nao lay duoc tu file Christoffel thi khong dung GPU ----
+            # ---- (A) pairs available from the Christoffel file need no GPU ----
             left = []
             for (i, j) in want:
                 r = reuse.get((regime, act, str(w), str(i), str(j)))
@@ -858,11 +859,11 @@ def aggregate(mode, path):
     fin = os.path.join(OUT_DIR, f"profile_shape_{mode}_cell.csv")
     g.to_csv(fin, index=False); log(f"-> {fin}  ({len(g)} o)")
 
-    log("\n  hinh dang cua buou do lech (median theo che do):")
+    log("\n  shape of the deviation bump (median per regime):")
     log(f"    {'regime':6s} {'dev_rel':>11s} {'t_peak':>8s} {'skew':>7s}   "
         f"(t_peak=0.5 & skew=0 => doi xung nhu mo hinh do choi)")
     for reg, s in g.groupby("regime"):
-        # dung [] chu khong dung thuoc tinh: 'skew' trung ten method cua DataFrame
+        # index with [], not attribute access: 'skew' collides with a DataFrame method
         log(f"    {reg:6s} {s['dev_rel'].median():11.4e} "
             f"{s['t_peak'].median():8.3f} {s['skew'].median():+7.3f}")
 

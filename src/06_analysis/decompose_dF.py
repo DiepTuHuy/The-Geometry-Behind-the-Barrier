@@ -1,43 +1,39 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- measure_geo.py  --  DO DO LECH TRAC DIA (§5.1) tu checkpoint da train
-============================================================================
-Vá mat xich con thieu cua paper: cac experiment (param_{mlp,cnn,ts}_v2) moi do
-wmove / dF / barrier / acc, NHUNG chua do "truong trac dia gan duong noi suy
-tuyen tinh". §5.1 hua "xay dung day du bo may do" cho:
+"""Split ||d_z F||_op into its frozen-softmax and softmax-transport parts.
 
-        sup_t || gamma_g(t) - gamma_lin(t) ||          (do lech trac dia)
+The metric derivative decomposes as
 
-o BAC NHAT, qua bieu dien Green cua Bo de 4.10 va Christoffel cua G_F=F+lambda I:
+    d_z F = d_z Ftilde  +  transport,     Ftilde(w) = E_x[ J^T S_0 J ]
 
-  gamma_lin'' = 0  =>  residual trac dia cua duong thang = Gamma(delta,delta)
-  xi = gamma_g - gamma_lin,  xi'' ~= -Gamma_gamma_lin(delta,delta)   (bac nhat)
-  xi(t) = int_0^1 G(t,s) Gamma(delta,delta)(gamma_lin(s)) ds
-  G(t,s) = s(1-t) neu s<=t, t(1-s) neu s>=t
+where Ftilde freezes the softmax factor S at the value it takes at the
+checkpoint, so only the Jacobian moves. The appendix proves that the frozen
+surrogate flattens at the lazy rate, while the transport term is controlled not
+by width but by the predictive distribution, through
+rho_S(w) = E_x ||S(p_w(x))||_op. This script measures the three operator norms
+separately, per checkpoint, and reports how each scales with width.
 
-Christoffel (Levi-Civita cho G_F, delta=delta):
-  Gamma(delta,delta) = 1/2 G_F^{-1} [ 2 (d_delta F) delta  -  m ],
-     m_l = delta^T (d_l F) delta = grad_w [ delta^T F(w) delta ]_l
+For every (regime, act, width, seed) it measures, as a maximum over NZ random
+unit directions z:
 
-Bo may TAI SU DUNG fisher_vp/dFz da validate may-precision cua ban; THEM:
-  - grad_quad : m = grad_w <delta,F delta> qua autograd (jvp long trong grad)
-  - cg_solve  : G_F^{-1} qua conjugate gradient (chi can fisher_vp)
-  - green     : cau phuong Green
+    dF_op        ||d_z F||_op            the true metric derivative
+    gn_op        ||d_z Ftilde||_op       frozen softmax
+    transport_op ||d_z F - d_z Ftilde||  the softmax correction
+    rho_S        E_x ||S(p_w(x))||_op
+    tr_frac      transport_op / dF_op    the share carried by transport
 
-CANH BAO DIEN GIAI (theo Remark 5.1 + 4.5 cua paper):
-  * Do lon TUYET DOI phu thuoc CG damping lambda -> CHI doc so mu theo width va
-    ti so tuong doi (bat bien-scale). Script bao cao dev_rel = sup||xi||/||delta||.
-  * Can Thm4.7(III) chi triet tieu khi alpha>2 (ly thuyet KHONG bao dam) -> ket
-    luan phai neo tren PHEP DO nay, khong tren nguong tiem can.
-  * dFz lay theo huong don vi delta_hat (khop eps da hieu chuan cho dF).
+Each norm is estimated by power iteration on the linear map v -> (d_z F) v,
+built from the same central-difference primitive used for dF elsewhere, so the
+numbers are comparable with the training runs.
 
-CACH DUNG:
-  - Chinh MODE ("mlp"/"cnn"/"ts"), SHARD_ID (0..5), tro CKPT toi noi luu .pt.
-  - SMOKE=True: tu train 2 net tinh de test toan tuyen (~phut) roi do.
-  - Output: param_geo_{MODE}_shard{ID}.csv  (kind="geo"), resumable.
-============================================================================
+Closing report: log-log slopes in width for each quantity, and which of the two
+terms dominates at the widest point. The interpretation is left to the measured
+exponents: a flat rho_S with gn_op falling means the flattening comes from the
+Gauss-Newton term; if transport falls as well, both contribute, since transport
+also contains J and therefore linearises too.
+
+Usage:  set MODE and point CKPT_ROOTS at the checkpoints.
+Output: decompose_{MODE}.csv, one row per checkpoint.
 """
 import os, sys, time, math, glob, itertools, traceback
 try: sys.stdout.reconfigure(line_buffering=True); sys.stderr.reconfigure(line_buffering=True)
@@ -45,7 +41,7 @@ except Exception: pass
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
-def _tv():   # torchvision chi can cho mlp/cnn (ts la synthetic)
+def _tv():   # torchvision is needed for mlp/cnn only; ts is synthetic
     import torchvision; return torchvision
 
 # ==================================================================== CONFIG (DECOMPOSE dF = GN + transport)
@@ -60,14 +56,14 @@ def _first(pats):
 CKPT_ROOTS=[".","/kaggle/input","/content","/content/drive/MyDrive"]
 OUT_DIR="."
 WIDTHS={"mlp":[64,128,256,512,1024,2048,4096],"cnn":[1,2,4,8],"ts":[64,128,256,512,1024,2048,4096]}[MODE]
-ACTS=["gelu","tanh"]              # hai ham trom dai dien (them swish/softplus neu muon)
+ACTS=["gelu","tanh"]              # two representative smooth activations; add swish/softplus if wanted
 REGIMES=["ntk","sp","mup"]
 NSEEDS=3                          # 3 seed/o du de doc slope
 BATCH=1024; MICRO=64; FD_EPS=3e-3
 NZ=3; PI_ITERS=8                  # so huong z + so vong power-iteration cho op-norm
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DIN,K={"mlp":(784,10),"cnn":(None,10),"ts":(64,10)}[MODE]
-# cac hyperparam geo khong dung o day nhung 1 so ham middle tham chieu:
+# geodesic hyperparameters, unused here but referenced by the shared helpers:
 GEO_MICRO=MICRO; FD_RICH=True; LAM_REL=1e-2; CG_ITERS=1; CG_TOL=1e-6; POWER_ITERS=1; GEO_BATCH=BATCH
 GEO_WIDTHS=WIDTHS; GEO_ACTS=ACTS; SHARD_ID=""; RESUME=True; SMOKE=False; LAM_SWEEP=None
 SHARD_PLAN={0:("ntk",["relu","gelu","tanh"])}
@@ -121,7 +117,7 @@ class NetCNN(nn.Module):     # cnn (ScaledConv + GroupNorm)
 def build_net(width, act, regime):
     return NetCNN(width,act,regime) if MODE=="cnn" else NetMLP(width,act,regime)
 
-# ---- perm spec (giong script tuong ung) ----
+# ---- permutation spec, as in the matching training script ----
 def perm_spec(model):
     if MODE=="cnn":
         ag={"c1.weight":["g1",None,None,None],"n1.weight":["g1"],"n1.bias":["g1"],
@@ -172,7 +168,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
         if moved==0: break
     return perms
 
-# ==================================================================== PRIMITIVES (giong script)
+# ==================================================================== PRIMITIVES (as in the training scripts)
 def _pb(m): return ({k:v.detach() for k,v in m.named_parameters()},{k:v.detach() for k,v in m.named_buffers()})
 def _call(m,p,b,x): return functional_call(m,{**p,**b},(x,))
 def fisher_vp(m,p,b,x,v,micro):
@@ -206,12 +202,12 @@ def quad_scalar(m,p,b,x,delta,micro):
         Su=pr*u-pr*(pr*u).sum(1,keepdim=True); t=(u*Su).sum()
         total=t if total is None else total+t
     return total/B
-def _quad_sum(m,p,b,xb,delta):          # SUM tren chunk cua u^T S u (khong chia B)
+def _quad_sum(m,p,b,xb,delta):          # sum of u^T S u over a chunk, not divided by B
     def f(pp): return _call(m,pp,b,xb)
     logits,u=_fjvp(f,(p,),(delta,)); pr=torch.softmax(logits,1)
     Su=pr*u-pr*(pr*u).sum(1,keepdim=True); return (u*Su).sum()
 def grad_quad(m,p,b,x,delta,micro):    # m_l = delta^T (d_l F) delta = grad_w<delta,F delta>
-    B=x.shape[0]; acc=None                # cong grad theo micro-batch -> bo nho chan boi micro (KHONG giu graph ca batch)
+    B=x.shape[0]; acc=None                # accumulate per micro-batch, so memory is bounded by micro
     for i in range(0,B,micro):
         gi=_grad(lambda pp: _quad_sum(m,pp,b,x[i:i+micro],delta))(p)
         acc={k:gi[k].detach() for k in gi} if acc is None else {k:acc[k]+gi[k].detach() for k in acc}
@@ -242,7 +238,7 @@ def cg_solve(m,p,b,x,rhs,lam,micro,x0=None,iters=80,tol=1e-6):
     return xk, math.sqrt(_vdot(r,r)/r0)
 def christoffel_dd(m,p,b,x,delta,lam,micro,x0=None):
     dn=_vnorm(delta); dhat=_vscale(delta,1.0/dn)
-    # (d_delta F) delta: tach hai muc eps de do eps-stability (parity voi validation dF). Cung so fisher_vp nhu Richardson.
+    # (d_delta F) delta at two eps levels, to report finite-difference stability.
     d1=dFz(m,p,b,x,dhat,dhat,FD_EPS,micro,False)                       # central diff @ eps
     d2=dFz(m,p,b,x,dhat,dhat,FD_EPS/2,micro,False)                     # @ eps/2
     t1r={k:(4*d2[k]-d1[k])/3 for k in d1} if FD_RICH else d1           # Richardson
@@ -271,7 +267,7 @@ def load_data():
         if "d" in _CACHE: return _CACHE["d"]
         ds=_tv().datasets.FashionMNIST("./data",train=True,download=True)
         X=((ds.data.float()/255.0)-0.2860)/0.3530; X=X.unsqueeze(1); _CACHE["d"]=X; return X
-    # ts: chi can input X ~ N(0,I_64) (Fisher = ky vong theo x)
+    # ts needs inputs only: F is an expectation over x
     if "d" in _CACHE: return _CACHE["d"]
     g=torch.Generator().manual_seed(1); X=torch.randn(20000,DIN,generator=g); _CACHE["d"]=X; return X
 
@@ -342,7 +338,7 @@ def self_test():
     torch.set_default_dtype(old)
 
 def _smoke_train(regime,act,w,seed):
-    """train NHANH 1 net tinh de smoke-test toan tuyen (chi khi khong co ckpt)."""
+    """Train one small net quickly, to smoke-test the path when no checkpoint exists."""
     set_seed(seed); m=build_net(w,act,regime).to(DEVICE).train()
     if MODE=="cnn":
         ds=_tv().datasets.FashionMNIST("./data",train=True,download=True)
@@ -378,7 +374,7 @@ def fisher_vp_frozen(m,p,b,x,v,micro,pr0):
     return {k:acc[k]/B for k in acc}
 
 def _dFz_apply(m,p,b,x,z,v,micro,pr0):
-    """(d_z F)v hoac (d_z F~)v qua sai phan trung tam (pr0=None: F that)."""
+    """(d_z F)v, or (d_z Ftilde)v when pr0 is given, by central differences."""
     if pr0 is None:
         Fp=fisher_vp(m,_vaxpy(p,FD_EPS,z),b,x,v,micro); Fm=fisher_vp(m,_vaxpy(p,-FD_EPS,z),b,x,v,micro)
     else:
@@ -413,7 +409,7 @@ def wrow(path,r):
         f.write(",".join(str(r.get(c,"")) for c in CSVD)+"\n"); f.flush()
 
 def self_test_decomp():
-    log("  [self-test] tach dF=dF~+transport tren model nho...")
+    log("  [self-test] splitting dF = dFtilde + transport on a small model ...")
     old=torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
     torch.manual_seed(0); mm=NetMLP(6,"tanh","ntk",din=4,k=3).eval(); xx=torch.randn(10,4)
     pp,bb=_pb(mm); pr0=torch.softmax(_call(mm,pp,bb,xx),1).detach()
@@ -447,13 +443,13 @@ def main():
                     if cp is None: continue
                     sd,_,_=load_sd(cp); ref=build_net(w,act,regime).to(DEVICE).eval()
                     p_ref,b_ref=_pb(ref); p={k:sd[k].to(DEVICE) for k in p_ref.keys()}
-                    # frozen softmax tai chinh checkpoint
+                    # softmax frozen at this checkpoint
                     pr0=[]
                     with torch.no_grad():
                         for i in range(0,Xb.shape[0],MICRO):
                             pr0.append(torch.softmax(_call(ref,p,b_ref,Xb[i:i+MICRO]),1))
                     pr0=torch.cat(pr0,0)
-                    # op-norm cho tung phan, max tren NZ huong z
+                    # operator norm of each part, maximised over NZ directions z
                     gn=dt=df=0.0
                     for zi in range(NZ):
                         g=torch.Generator(device=DEVICE).manual_seed(1000+zi)
@@ -471,10 +467,10 @@ def main():
                     log(f"  {regime}/{act}/w{w}/s{s}: dF={df:.2e} GN={gn:.2e} transport={dt:.2e} rho_S={rs:.3f} (tr={dt/max(df,1e-30):.0%})")
                     del ref
                     if DEVICE=="cuda": torch.cuda.empty_cache()
-    # ===== PHAN TICH (mo ta trung thuc, khong ep gia thuyet) =====
+    # ===== ANALYSIS: report what was measured, without forcing a hypothesis =====
     import numpy as np
-    log("\n================ PHAN TICH (slope log-log theo width) ================")
-    log(f"{'cell':16s} {'dF~n^':>7s} {'GN~n^':>7s} {'trans~n^':>8s} {'rhoS~n^':>8s} {'tro-luc':>8s}  dien giai")
+    log("\n================ ANALYSIS (log-log slope in width) ================")
+    log(f"{'cell':16s} {'dF~n^':>7s} {'GN~n^':>7s} {'trans~n^':>8s} {'rhoS~n^':>8s} {'larger':>8s}  reading")
     for (regime,act),d in sorted(agg.items()):
         ws=sorted(d)
         if len(ws)<3: continue
@@ -482,13 +478,13 @@ def main():
         sdF,sGN,sTR,sRS=_slope(ws,med("df")),_slope(ws,med("gn")),_slope(ws,med("dt")),_slope(ws,med("rs"))
         gnL,dtL=med("gn"),med("dt")
         dom="GN" if gnL[-1]>=dtL[-1] else "transp"
-        parts=["S phang" if abs(sRS)<0.15 else f"S doi(n^{sRS:.2f})"]
-        parts.append("GN xuong" if sGN<-0.15 else "GN dung")
-        parts.append("transp PHANG" if abs(sTR)<0.2 else ("transp xuong" if sTR<-0.15 else "transp tang"))
-        log(f"{regime}/{act:9s} {sdF:7.2f} {sGN:7.2f} {sTR:8.2f} {sRS:8.2f} {dom:>8s}  dF xuong do {dom}; "+"; ".join(parts))
-    log("\nDoc: rhoS phang => S mu-width (dung truc giac). GN xuong ~n^-0.5 & transport PHANG")
-    log("     => Gauss-Newton (linear-hoa, Phu luc A) la thu pham. Neu transport CUNG xuong => ca hai co")
-    log("     vi transport chua J (khong chi S) nen cung linear-hoa. So mu thuc quyet dinh, khong phai gia thuyet.")
+        parts=["S flat" if abs(sRS)<0.15 else f"S moves (n^{sRS:.2f})"]
+        parts.append("GN falls" if sGN<-0.15 else "GN flat")
+        parts.append("transport flat" if abs(sTR)<0.2 else ("transport falls" if sTR<-0.15 else "transport grows"))
+        log(f"{regime}/{act:9s} {sdF:7.2f} {sGN:7.2f} {sTR:8.2f} {sRS:8.2f} {dom:>8s}  dF falls with {dom}; "+"; ".join(parts))
+    log("\nReading: rhoS flat means S is width-blind. GN falling like n^-0.5 with transport flat")
+    log("     points at the Gauss-Newton term. If transport falls too, both contribute, since")
+    log("     transport also contains J and linearises as well. The measured exponents decide.")
     log(f"\n-> {out}")
 
 if __name__=="__main__": main()

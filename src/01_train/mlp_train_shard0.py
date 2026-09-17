@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-MLP/MNIST 3-REGIME (NTK/SP/muP) x 5 activation, SGD dong nhat. Param module validated coord-check (v6).
-Vá đúng ba điểm yếu bản cũ: 5 seed (thay vì 2), train tới HỘI TỤ (kiểm acc),
-và quét width tới 4096 (thay vì dừng ~1024) --- để (A) ∂F và (B) barrier CHỒNG dải width.
+"""Train MLP pairs on MNIST; measure the interpolation barrier and ||dF||_op.
 
-Đo: barrier sau căn permutation (MLP -> KHÔNG BN, KHÔNG REPAIR) và ||∂F||_op (hàm smooth).
-Setup: hai MLP KHOI TAO DOC LAP train tren MNIST that (khong teacher, khong over-realization).
+For each cell (parameterisation, activation, width) five networks are trained
+from independent initialisations. Every seed pair is then aligned by weight
+matching and the barrier is evaluated on the linear path between the two
+minima. The metric-derivative norm ||d_z F||_op is measured on the smooth
+activations only, by central differences with power iteration over z.
 
-CÁCH DÙNG: python ts_mlp_shard.py   (SMOKE=True để test ~phút; đặt False khi chạy thật)
-6 shard: 3 ham x {w4096 rieng | w<=2048 gop}; moi shard chay cell cua no x 5 seed.
-Output ts_mlp_shard{K}.csv -> gộp bằng script merge (kind=net/pair như ResNet).
-Resume: tự kéo ckpt cũ từ /kaggle/input (như file ResNet).
+Grid: 3 parameterisations (ntk / sp / mup) x 5 activations x 7 widths
+(64-4096) x 5 seeds. No normalisation and no dropout, so F and the Hessian
+are free of gauge artefacts, and no REPAIR step is needed.
+
+The grid is split into 6 shards; set SHARD_ID to select one. Set SMOKE=True
+for a reduced grid that exercises the whole path in a few minutes.
+
+Usage:  python mlp_train_shard0.py
+Output: param_mlp_v2_shard<ID>.csv, one row per trained net (kind=net) and
+        one per aligned pair (kind=pair).
 """
 import os, sys, time, math, glob, traceback, itertools, shutil
 try:
@@ -27,14 +33,14 @@ except Exception:
     _HAS_FUNC = False
 
 # ============================================================ CONFIG
-SMOKE      = False         # chay that (da smoke-validate)
+SMOKE      = False         # True: reduced grid for a quick end-to-end check
 NUM_SHARDS = 6
-SHARD_ID   = 0             # <<< mỗi account một số 0..5
+SHARD_ID   = 0             # which shard this process runs, 0..NUM_SHARDS-1
 RESUME     = True
-RUN_TAG    = "pmlp_v2"       # <<< v2: warmup+clip; tag moi -> KHONG nap ckpt v1
+RUN_TAG    = "pmlp_v2"     # checkpoint tag; a new tag starts from scratch
 OUT_DIR    = "."
 SEED_BASE  = 4321
-DIN, K     = 784, 10       # MNIST phang 28x28
+DIN, K     = 784, 10       # flattened 28x28 MNIST, 10 classes
 
 if SMOKE:
     REGIMES= ["ntk","sp","mup"]
@@ -45,10 +51,10 @@ if SMOKE:
     DF_EPS=3e-3; DF_RICHARDSON=False
 else:
     REGIMES= ["ntk","sp","mup"]
-    ACTS   = ["relu","gelu","tanh","swish","softplus"]     # 5 ham
+    ACTS   = ["relu","gelu","tanh","swish","softplus"]
     WIDTHS = [64,128,256,512,1024,2048,4096]
-    NSEEDS = 5; EPOCHS = 30; LR = 0.1              # SGD dong nhat; v2 them warmup+clip AP DONG DEU (bai hoc TS v1: SP no dau run o width lon)
-    WARMUP_EPOCHS = 8; CLIP_NORM = 1.0              # warmup thuc te = min(8, epochs//5) = 6 khi EPOCHS=30
+    NSEEDS = 5; EPOCHS = 30; LR = 0.1              # one optimiser setting for every regime
+    WARMUP_EPOCHS = 8; CLIP_NORM = 1.0              # effective warmup is min(WARMUP_EPOCHS, epochs//5)
     T_GRID=21; MATCH_ITERS=8; BATCH=256; N_EVAL=5000
     DF_ENABLE=True; DF_ACTS=["gelu","tanh","swish","softplus"]; DF_BATCH=2048; DF_MICRO=64; DF_ITERS=20; DF_NZ=5
     DF_EPS=3e-3; DF_RICHARDSON=True
@@ -59,9 +65,9 @@ def set_seed(s): np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed
 
 # ============================================================ MODEL (MLP 2 hidden)
 def make_act(n): return {"relu":nn.ReLU,"gelu":nn.GELU,"tanh":nn.Tanh,"swish":nn.SiLU,"softplus":nn.Softplus}[n]()
-SMOOTH={"gelu","tanh","swish","softplus"}   # relu kink -> chi barrier
+SMOOTH={"gelu","tanh","swish","softplus"}   # relu is not C^3: barrier only, no dF
 BASE=64
-def param_cfg(regime, fin, fout, kind):   # (init_std, fwd_mult, lr_scale) -- validated coord-check v6
+def param_cfg(regime, fin, fout, kind):   # -> (init_std, forward_mult, lr_scale)
     ss=math.sqrt(fin)
     if regime=="sp":   return (1.0/ss, 1.0, 1.0)
     if regime=="ntk":  return (1.0, 1.0/ss, 1.0)
@@ -87,7 +93,8 @@ class MLP(nn.Module):
     def opt_groups(self,base_lr):
         return [{"params":[m.weight,m.bias],"lr":base_lr*m.lr_scale} for m in [self.fc1,self.fc2,self.fc3]]
 
-# perm groups: h1 (sau fc1), h2 (sau fc2). fc3 out = lớp (không hoán vị).
+# Permutable groups: h1 after fc1, h2 after fc2. The readout axis is
+# class-indexed and therefore fixed.
 def perm_spec(model):
     ag = {"fc1.weight":["h1",None], "fc1.bias":["h1"],
           "fc2.weight":["h2","h1"], "fc2.bias":["h2"],
@@ -132,7 +139,7 @@ def weight_matching(ag, gs, sdA, sdB, iters, seed=0):
         if moved==0: break
     return perms
 
-# ============================================================ ∂F (như file ResNet, đã validate máy-precision)
+# ============================================================ METRIC DERIVATIVE dF
 def _pb(m): return ({k:v.detach() for k,v in m.named_parameters()},{k:v.detach() for k,v in m.named_buffers()})
 def _call(m,p,b,x): return functional_call(m,{**p,**b},(x,))
 def fisher_vp(m,p,b,x,v,micro):
@@ -177,10 +184,10 @@ def self_test_perm():
     rng=np.random.RandomState(5); perms={g:torch.as_tensor(rng.permutation(n),dtype=torch.long) for g,n in gs.items()}
     m2=MLP(48,"tanh").eval(); m2.load_state_dict(apply_perm(m.state_dict(),ag,perms))
     x=torch.randn(8,DIN); d=(m(x)-m2(x)).abs().max().item()
-    assert d<1e-4, f"PERM MLP sai: {d:.2e}"; log(f"  [self-test] OK perm  max|f(w)-f(pi.w)|={d:.2e}")
+    assert d<1e-4, f"permutation invariance broken: {d:.2e}"; log(f"  [self-test] OK perm  max|f(w)-f(pi.w)|={d:.2e}")
 def self_test_dF():
-    if not _HAS_FUNC: log("  [self-test] BỎ ∂F: thiếu torch.func"); return
-    log("  [self-test] ∂F vs Fisher tường minh (float64) ...")
+    if not _HAS_FUNC: log("  [self-test] skip dF: torch.func unavailable"); return
+    log("  [self-test] dF against the explicit Fisher (float64) ...")
     torch.manual_seed(0)
     m=MLP(6,"tanh",din=4,k=3).double().eval(); x=torch.randn(6,4,dtype=torch.float64)
     p,b=_pb(m); keys=list(p.keys())
@@ -196,14 +203,14 @@ def self_test_dF():
         return torch.einsum('bki,bkl,blj->ij',Jf,S,Jf)/B
     vf=torch.randn(flat(p).numel(),dtype=torch.float64)
     e1=(flat(fisher_vp(m,p,b,x,unflat(vf),micro=6))-Fexp(p)@vf).abs().max().item()
-    assert e1<1e-8, f"FVP sai {e1:.2e}"; log(f"  [self-test] FVP==F tường minh: {e1:.2e}")
+    assert e1<1e-8, f"Fisher-vector product mismatch: {e1:.2e}"; log(f"  [self-test] FVP matches explicit F: {e1:.2e}")
     gen=torch.Generator().manual_seed(1); z=_vrand(p,gen); eps=1e-3
     fd=flat(dFz(m,p,b,x,z,unflat(vf),eps,micro=6,rich=False))
     ex=((Fexp(_vaxpy(p,eps,z))-Fexp(_vaxpy(p,-eps,z)))/(2*eps))@vf
     rel=(fd-ex).abs().max().item()/max(ex.abs().max().item(),1e-12)
-    assert rel<1e-6, f"∂F sai {rel:.2e}"; log(f"  [self-test] ∂F==tường minh: {rel:.2e}")
+    assert rel<1e-6, f"dF mismatch: {rel:.2e}"; log(f"  [self-test] dF matches the explicit derivative: {rel:.2e}")
 
-# ============================================================ DATA (MNIST that)
+# ============================================================ DATA
 _CACHE={}
 def load_mnist(train):
     key=("mnist",train)
@@ -216,8 +223,8 @@ def load_mnist(train):
 def train(model, X, Y, epochs):
     model.to(DEVICE).train()
     w0=torch.cat([p.detach().reshape(-1) for p in model.parameters()]).clone()
-    opt=torch.optim.SGD(model.opt_groups(LR),momentum=0.9)   # SGD dong nhat + per-layer lr_scale (regime)
-    wu=min(WARMUP_EPOCHS, max(1, epochs//5))                 # v2: warmup tuyen tinh -> cosine; SMOKE tu ngan
+    opt=torch.optim.SGD(model.opt_groups(LR),momentum=0.9)   # per-layer lr_scale carries the parameterisation
+    wu=min(WARMUP_EPOCHS, max(1, epochs//5))                 # linear warmup, then cosine decay
     def _lr_lambda(ep):
         if ep < wu: return (ep+1)/wu
         prog=(ep-wu)/max(epochs-wu,1); return 0.5*(1.0+math.cos(math.pi*prog))
@@ -227,7 +234,7 @@ def train(model, X, Y, epochs):
         for i in range(0,n,BATCH):
             idx=perm[i:i+BATCH]; x=X[idx].to(DEVICE); y=Y[idx].to(DEVICE)
             opt.zero_grad(set_to_none=True); F.cross_entropy(model(x),y).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)   # v2: chan spike dau run
+            torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
             opt.step()
         sched.step()
     wT=torch.cat([p.detach().reshape(-1) for p in model.parameters()])
@@ -252,7 +259,7 @@ def barrier(scratch, sdA, sdB, X, Y, tgrid):
     L=np.array(L); return float(L.max()-0.5*(L[0]+L[-1]))
 
 # ============================================================ SHARDING + resume + CSV
-SHARD_PLAN = {   # 6 shard = 3 regime x 2 nhom ham; moi shard chay MOI width x 5 seed
+SHARD_PLAN = {   # 3 regimes x 2 activation groups; each shard runs all widths and seeds
     0:("ntk",["relu","gelu","tanh"]), 1:("ntk",["swish","softplus"]),
     2:("sp", ["relu","gelu","tanh"]), 3:("sp", ["swish","softplus"]),
     4:("mup",["relu","gelu","tanh"]), 5:("mup",["swish","softplus"]),
@@ -267,8 +274,8 @@ def import_prev_ckpts():
         dst=os.path.join(CKPT_DIR,os.path.basename(src))
         if not os.path.exists(dst):
             try: shutil.copy(src,dst); n+=1
-            except Exception as e: log(f"  (import ckpt lỗi: {e!r})")
-    log(f"  [resume] nạp {n}/{len(found)} ckpt từ /kaggle/input" if found else "  [resume] không thấy ckpt cũ")
+            except Exception as e: log(f"  (checkpoint import failed: {e!r})")
+    log(f"  [resume] imported {n}/{len(found)} checkpoints" if found else "  [resume] no previous checkpoints found")
 def build_worklist():
     if SMOKE: return [(r,a,WIDTHS) for r in REGIMES for a in ACTS]
     regime,acts=SHARD_PLAN[SHARD_ID]
@@ -285,7 +292,7 @@ def write_row(path,row):
 @torch.no_grad()
 def _cv(m,x): return [float(t.abs().mean()) for t in m(x,return_acts=True)[1]]
 def coordinate_check():
-    log("  [coord-check] (muP nen PHANG; NTK lazy |upd|->0; SP lech theo width)")
+    log("  [coord-check] mup should be flat in width; ntk updates shrink; sp drifts")
     x=torch.randn(64,DIN,device=DEVICE); y=torch.randint(0,K,(64,),device=DEVICE)
     for r in REGIMES:
         row=[]
@@ -304,7 +311,7 @@ def main():
     if RESUME: import_prev_ckpts()
     coordinate_check()
     out=os.path.join(OUT_DIR, "param_mlp_v2_shard%s.csv" % (SHARD_ID if not SMOKE else "SMOKE"))
-    cells=build_worklist(); log(f"cells shard nay: {cells} -> {out}")
+    cells=build_worklist(); log(f"cells in this shard: {cells} -> {out}")
     tgrid=list(np.linspace(0,1,T_GRID))
     Xtr,Ytr=load_mnist(True); Xte,Yte=load_mnist(False)
     Xbar,Ybar=Xtr[:N_EVAL],Ytr[:N_EVAL]; Xdf=Xtr[:DF_BATCH].to(DEVICE)
@@ -319,17 +326,17 @@ def main():
                     if RESUME and os.path.exists(cp):
                         try: d=torch.load(cp,map_location="cpu",weights_only=False)
                         except TypeError: d=torch.load(cp,map_location="cpu")
-                        sds.append(d["sd"]); accs.append(d["acc"]); dfs.append(d.get("dF")); wmvs.append(d.get("wmove")); log(f"  s{sd_i}: NAP ckpt acc={d['acc']:.3f}")
+                        sds.append(d["sd"]); accs.append(d["acc"]); dfs.append(d.get("dF")); wmvs.append(d.get("wmove")); log(f"  s{sd_i}: resumed, acc={d['acc']:.3f}")
                     else:
                         set_seed(SEED_BASE+REGIMES.index(regime)*100000+WIDTHS.index(w)*100+ACTS.index(act)*7+sd_i)
                         m,wmove=train(MLP(w,act,regime),Xtr,Ytr,EPOCHS); a=acc_of(m,Xte,Yte)
                         dF=None
                         if df_here:
                             try: m.eval(); dF=measure_dF(m,Xdf,DF_EPS,DF_ITERS,DF_NZ,DF_MICRO,DF_RICHARDSON,seed=999+sd_i)
-                            except Exception as e: traceback.print_exc(); log(f"  s{sd_i}: dF loi {e!r}")
+                            except Exception as e: traceback.print_exc(); log(f"  s{sd_i}: dF failed {e!r}")
                         sd={k:v.detach().cpu().clone() for k,v in m.state_dict().items()}
                         try: torch.save({"sd":sd,"acc":a,"dF":dF,"wmove":wmove},cp)
-                        except Exception as e: log(f"  (ko luu ckpt {e!r})")
+                        except Exception as e: log(f"  (checkpoint save failed {e!r})")
                         sds.append(sd); accs.append(a); dfs.append(dF); wmvs.append(wmove); log(f"  s{sd_i}: acc={a:.3f} dF={dF} wmove={wmove:.3f}")
                         del m; torch.cuda.empty_cache() if DEVICE=="cuda" else None
                     write_row(out,dict(kind="net",shard=SHARD_ID,regime=regime,act=act,width=w,seed=sd_i,
@@ -351,9 +358,3 @@ def main():
     log("DONE shard",SHARD_ID)
 
 if __name__=="__main__": main()
-
-# GHI CHÚ:
-# - Muc dich: barrier co TRU toi 4096 khong (khong co co che sup) -> chot (A) va neg(B) khong phai artifact-width.
-#   Nếu tụt dần -> tanh cũng sụp chậm (khớp ResNet) -> đổi phát biểu §5.5 sang "tốc độ sụp".
-# - Accuracy phải ~cao & ngang giữa 3 hàm; nếu tanh thấp hẳn -> chưa hội tụ, tăng EPOCHS.
-# - Toan bo suite (MLP/CNN/ResNet-GroupNorm/TS) deu BN-free -> KHONG REPAIR o dau ca.

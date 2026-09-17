@@ -1,60 +1,59 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-============================================================================
- measure_profile_length.py -- DO DAI: he so Rayleigh rq(t) DOC CA DUONG
-                              o CA BA CHE DO (ntk / sp / mup)
-============================================================================
-     python measure_profile_length.py              # MODE=mlp (mac dinh)
+"""Fisher length: the Rayleigh quotient rq(t) along the whole path, all regimes.
+
+     python measure_profile_length.py              # MODE=mlp (default)
      MODE=cnn python measure_profile_length.py
-     MODE=all python measure_profile_length.py     # chay lan luot mlp,cnn,ts
+     MODE=all python measure_profile_length.py     # mlp, then cnn, then ts
 
-VA DAU KHUYET NAO
------------------
-result-1/param_geo_{mode}.csv DA co rq o ca 3 che do, NHUNG chi tai BA MOC
-t in {0, 1/2, 1} (cot rq_A / rq_mid / rq_B). Khong doc duoc DANG cua duong
-do cong: no phinh o giua hay lom o giua, dinh nam o dau.
-File nay do rq tren luoi TGRID=21 diem, ca 3 che do, ca 3 kien truc.
+What was missing
+----------------
+param_geo_{mode}.csv already carries rq in all three regimes, but only at three
+nodes, t in {0, 1/2, 1} (columns rq_A / rq_mid / rq_B). That does not show the
+shape of the curve: whether it bulges or dips in the middle, and where the peak
+sits. This file measures rq on a 21-point grid, in all three regimes and all
+three architectures.
 
-DINH NGHIA (dong nhat measure_geo.py, ham _flen)
-------------------------------------------------
-    q(t)    = Delta^T F(gamma_lin(t)) Delta            (>= 0)
-    rq(t)   = q(t) / ||Delta||^2      <- HE SO RAYLEIGH (bat bien theo scale cua Delta)
-    flen(t) = q(t) / 2                <- do dai Fisher
+Definitions (identical to _flen in the geodesic script)
+-------------------------------------------------------
+    q(t)    = Delta^T F(gamma_lin(t)) Delta          (>= 0)
+    rq(t)   = q(t) / ||Delta||^2     the Rayleigh quotient, invariant to the
+                                     scale of Delta
+    flen(t) = q(t) / 2               the Fisher length
 
-CSV chi ghi rq_t* va dnorm, vi flen suy ra duoc:
+The CSV stores rq_t* and dnorm only, since flen follows from them:
         flen(t) = 0.5 * rq(t) * dnorm^2
-Khong ghi thua cot nao de file khong phinh vo ich.
+No redundant column is written, so the file stays small.
 
-RE HON HAI FILE KIA
--------------------
-Moi moc t chi ton DUNG MOT fisher_vp -- khong CG, khong sai phan huu han.
-Vi vay lay duoc luoi 21 diem voi chi phi nho hon nhieu lan file Christoffel.
-
-NEO VAO SO CU (tan dung ket qua da chay)
+Cheaper than the other two profile files
 ----------------------------------------
-Chay xong, script tu doi chieu rq(0), rq(1/2), rq(1) vua do voi rq_A, rq_mid,
-rq_B trong result-1/param_geo_{mode}.csv. Ba con so nay PHAI trung -- day la
-phep kiem tra duong ong mien phi (cung ckpt, cung batch Fisher, cung phep
-can chinh hoan vi). Lech > 1% la co gi do khac cau hinh, script se bao.
+Each t node costs exactly one fisher_vp -- no CG, no finite differences -- so a
+21-point grid costs far less than the Christoffel file.
 
-RESUME / KAGGLE
----------------
-  - Tu keo CSV cu tu /kaggle/input ve /kaggle/working truoc khi chay.
-  - Cat bo dong ghi do dang neu session truoc bi giet giua chung.
-  - Bo qua o da xong TRUOC KHI load .pt.
-  - Dung chu dong khi gan het gio (BUDGET_H) de CSV kip flush.
+Cross-check against the earlier run
+-----------------------------------
+Afterwards the script compares the rq(0), rq(1/2), rq(1) it just measured with
+rq_A, rq_mid, rq_B in param_geo_{mode}.csv. Those must agree: it is the same
+checkpoints, the same Fisher batch and the same permutation alignment, so this
+is a free pipeline check. A gap above 1% means some configuration differs, and
+the script says so.
 
-CAN CO
+Resume
 ------
-  ckpt_{RUN_TAG}/{regime}_{act}_w{w}_s{s}.pt     va  du lieu MNIST/FashionMNIST
-  (ts la synthetic -- khong can tai gi; Fisher khong dung nhan y)
+  - Copies an existing CSV from the input mount into the working directory first.
+  - Truncates a half-written row if the previous session was killed partway.
+  - Skips finished cells before loading any .pt.
+  - Stops on its own near the time limit (BUDGET_H) so the CSV can flush.
 
-OUTPUT
+Required on disk
+----------------
+  ckpt_{RUN_TAG}/{regime}_{act}_w{w}_s{s}.pt, and MNIST / FashionMNIST
+  (ts is synthetic and needs no download; F does not use the labels)
+
+Output
 ------
-  profile_length_{mode}.csv        theo tung cap, resumable
-  profile_length_{mode}_cell.csv   median theo o (regime x act x width)
-============================================================================
+  profile_length_{mode}.csv        one row per pair, resumable
+  profile_length_{mode}_cell.csv   per-cell medians (regime x act x width)
 """
 import os, sys, time, math, glob, shutil, itertools, traceback, zipfile, io
 try:
@@ -65,15 +64,15 @@ import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev
 
-# ======================= THAM SO (dong nhat measure_geo.py) =================
+# ======================= PARAMETERS (as in the geodesic script) =============
 MODE      = os.environ.get("MODE", "mlp")          # mlp | cnn | ts | all
-REGIMES   = ["ntk", "sp", "mup"]                   # <<< CA BA CHE DO
-ACTS      = ["gelu", "tanh", "swish", "softplus"]  # C^3, khong relu (kink)
+REGIMES   = ["ntk", "sp", "mup"]
+ACTS      = ["gelu", "tanh", "swish", "softplus"]  # C^3 only; relu is excluded
 NSEEDS    = 5
-# File nay RE (1 fisher_vp moi moc t, khong CG) nen giu du 10 cap nhu ban goc.
-PAIRS     = int(os.environ.get("PAIRS", "10"))     # = combinations(5,2), dong nhat barrier
+# This file is cheap (one fisher_vp per t node, no CG), so it keeps all 10 pairs.
+PAIRS     = int(os.environ.get("PAIRS", "10"))     # combinations(5,2), the same pairs as the barrier
 
-# Chia manh giong hai file kia, de 3 file dung chung mot cach rai viec.
+# Sharded like the other two files, so all three split the work the same way.
 SHARD      = os.environ.get("SHARD")
 SHARD_PLAN = {0: ("ntk", ["gelu","tanh"]), 1: ("ntk", ["swish","softplus"]),
               2: ("sp",  ["gelu","tanh"]), 3: ("sp",  ["swish","softplus"]),
@@ -85,12 +84,12 @@ def plan_cells():
         return [(rg, a) for a in acts if a in ACTS]
     return [(rg, a) for rg in REGIMES for a in ACTS]
 
-TGRID     = int(os.environ.get("TGRID", "21"))     # luoi t (min de thay dang duong)
-FISHER_N  = 2048                                   # = GEO_BATCH cu -> so sanh truc tiep duoc
+TGRID     = int(os.environ.get("TGRID", "21"))     # t grid, fine enough to show the shape
+FISHER_N  = 2048                                   # same as GEO_BATCH, so results compare directly
 MICRO     = 64
 RESUME    = True
 SELFTEST  = os.environ.get("SELFTEST", "1") == "1"
-ANCHOR    = os.environ.get("ANCHOR", "1") == "1"   # doi chieu voi param_geo_*.csv
+ANCHOR    = os.environ.get("ANCHOR", "1") == "1"   # cross-check against param_geo_*.csv
 BUDGET_H  = float(os.environ.get("BUDGET_H", "11.0"))
 
 DATA_ROOT  = "/kaggle/input/datasets/ANONYMIZED/DATASET"
@@ -236,7 +235,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
         if moved == 0: break
     return perms
 
-# ------------------------------------------------------------------ DATA (khong can nhan y)
+# ------------------------------------------------------------------ DATA (labels are not needed)
 _C = {}
 def load_X(mode):
     if mode in _C: return _C[mode]
@@ -262,7 +261,7 @@ def _vdot(a, b): return float(sum((a[k]*b[k]).sum() for k in a))
 def _vnorm(a): return float(torch.sqrt(torch.clamp(sum((a[k]*a[k]).sum() for k in a), min=0)))
 
 def fisher_vp(m, p, b, x, v, micro):
-    """F v voi F = E_x[J^T S J], S = diag(p) - p p^T (Fisher cua softmax)."""
+    """F v, with F = E_x[J^T S J] and S = diag(p) - p p^T, the softmax Fisher."""
     B = x.shape[0]; acc = None
     for i in range(0, B, micro):
         xb = x[i:i+micro]
@@ -281,8 +280,8 @@ def rayleigh_at(m, pt, b, xf, delta, d2, micro):
 
 # ------------------------------------------------------------------ SELF-TEST
 def self_test():
-    """rq qua fisher_vp phai trung Fisher dac (may-precision). Chay duoc o local."""
-    log("  [self-test] rq qua fisher_vp == Fisher dac ...")
+    """rq via fisher_vp must match the dense Fisher to machine precision."""
+    log("  [self-test] rq via fisher_vp == dense Fisher ...")
     old = torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
     torch.manual_seed(0)
     m = NetMLP(6, "tanh", "ntk", din=4, k=3).eval(); x = torch.randn(8, 4)
@@ -311,8 +310,8 @@ def self_test():
 
 # ------------------------------------------------------------------ CKPT
 def _diagnose(tag):
-    """Noi THANG vi sao khong thay ckpt, thay vi de vong lap keu '<2 ckpt' hang chuc lan."""
-    log(f"[ckpt] !! KHONG THAY thu muc 'ckpt_{tag}' nao chua file .pt.")
+    """Say plainly why no checkpoint was found, instead of repeating '<2 ckpt' dozens of times."""
+    log(f"[ckpt] !! no 'ckpt_{tag}' directory containing .pt files was found.")
     seen, n_pt, zips = set(), 0, []
     for root in CKPT_ROOTS:
         if not root or not os.path.isdir(root): continue
@@ -322,31 +321,31 @@ def _diagnose(tag):
                 if   fn.endswith(".pt"):  n_pt += 1
                 elif fn.endswith(".zip"): zips.append(os.path.join(dp, fn))
     cand = sorted(d for d in seen if "ckpt" in d.lower())
-    log(f"[ckpt]    dang quet: {[r for r in CKPT_ROOTS if r and os.path.isdir(r)]}")
-    for root in CKPT_ROOTS:                      # cho thay THUC TE co gi trong do
+    log(f"[ckpt]    scanning: {[r for r in CKPT_ROOTS if r and os.path.isdir(r)]}")
+    for root in CKPT_ROOTS:                      # show what is actually there
         if not root or not os.path.isdir(root): continue
         try: top = sorted(os.listdir(root))[:12]
         except OSError: top = []
-        log(f"[ckpt]      {root}  ->  {top or 'RONG'}")
-    log(f"[ckpt]    thu muc co chu 'ckpt': {cand or 'KHONG CO'}")
-    log(f"[ckpt]    tong file .pt (o bat ky dau): {n_pt}")
+        log(f"[ckpt]      {root}  ->  {top or 'empty'}")
+    log(f"[ckpt]    directories containing 'ckpt': {cand or 'none'}")
+    log(f"[ckpt]    total .pt files found anywhere: {n_pt}")
     if zips:
-        log(f"[ckpt]    da QUET CA .zip: {[os.path.basename(z) for z in zips[:3]]} "
-            f"-- nhung khong co .pt nao hop voi ckpt_{tag}")
+        log(f"[ckpt]    .zip archives were scanned too: {[os.path.basename(z) for z in zips[:3]]} "
+            f"-- but none holds a .pt matching ckpt_{tag}")
     if n_pt and not cand:
-        log(f"[ckpt]    -> Co file .pt nhung KHONG nam trong thu muc ten 'ckpt_{tag}'.")
+        log(f"[ckpt]    -> .pt files exist but none sits in a directory named 'ckpt_{tag}'.")
     if cand and f"ckpt_{tag}" not in cand:
-        log(f"[ckpt]    -> Ten thu muc SAI. Can dung: 'ckpt_{tag}'")
+        log(f"[ckpt]    -> wrong directory name; it must be 'ckpt_{tag}'")
     if os.path.isdir("/kaggle/input") and not os.listdir("/kaggle/input"):
-        log(f"[ckpt]    -> /kaggle/input RONG: notebook CHUA duoc gan dataset nao.")
-        log(f"[ckpt]    -> Kaggle: nut 'Add Input' (ben phai) -> chon dataset chua ckpt_{tag}/")
-    log(f"[ckpt]    Cau truc dung: <bat ky>/ckpt_{tag}/{{regime}}_{{act}}_w{{w}}_s{{s}}.pt")
+        log(f"[ckpt]    -> /kaggle/input is empty: no dataset is attached to this notebook.")
+        log(f"[ckpt]    -> attach the dataset holding ckpt_{tag}/ as an input.")
+    log(f"[ckpt]    expected layout: <anything>/ckpt_{tag}/{{regime}}_{{act}}_w{{w}}_s{{s}}.pt")
 
 _IDX = {}
 _ZCACHE = {}
 
 def _zopen(p):
-    """Giu handle .zip mo san -- moi lan mo lai phai doc lai central directory."""
+    """Keep .zip handles open: reopening re-reads the central directory each time."""
     if p not in _ZCACHE: _ZCACHE[p] = zipfile.ZipFile(p)
     return _ZCACHE[p]
 
@@ -357,12 +356,13 @@ def _index_dir(root, tag, idx):
             if fn.endswith(".pt"): idx.setdefault(fn, os.path.join(dp, fn))
 
 def _index_zip(zpath, tag, idx):
-    """Doc .pt THANG TU TRONG .zip -- khong giai nen ra dia (do 12 GB dia trong).
+    """Read .pt directly out of a .zip, without extracting to disk.
 
-    Chap nhan hai kieu zip:
-      (a) co duong dan .../ckpt_{tag}/xxx.pt  -> chi lay dung tag nay
-      (b) zip PHANG, chi toan .pt             -> lay het (zip 1 regime kieu ntk.zip)
-    Neu zip chi chua ckpt_ cua kien truc KHAC -> bo qua, khong lay nham.
+    Two archive layouts are accepted:
+      (a) paths of the form .../ckpt_{tag}/xxx.pt  -> only this tag is taken
+      (b) a flat archive of .pt files             -> all of them (e.g. ntk.zip)
+    An archive holding only ckpt_ of another architecture is skipped, so nothing
+    is picked up by mistake.
     """
     try:
         z = _zopen(zpath)
@@ -374,11 +374,11 @@ def _index_zip(zpath, tag, idx):
         other  = any("/ckpt_" in norm(n) for n in names)
         use    = scoped if scoped else ([] if other else names)
         if not use and other:
-            log(f"[ckpt]    (bo qua {os.path.basename(zpath)}: chi chua ckpt_ cua kien truc khac)")
+            log(f"[ckpt]    (skipping {os.path.basename(zpath)}: it only holds ckpt_ of another architecture)")
         for n in use: idx.setdefault(os.path.basename(n), ("zip", zpath, n))
         return len(use), nested
     except Exception as e:
-        log(f"[ckpt] !! khong doc duoc {zpath}: {e!r}")
+        log(f"[ckpt] !! could not read {zpath}: {e!r}")
         return 0, []
 
 def _build_index(tag):
@@ -386,19 +386,19 @@ def _build_index(tag):
     idx = {}; zips = []
     for root in CKPT_ROOTS:
         if not root or not os.path.isdir(root): continue
-        _index_dir(root, tag, idx)                       # thu muc da giai nen: uu tien
+        _index_dir(root, tag, idx)                       # already-extracted directories win
         for dp, _, fns in os.walk(root):
             zips += [os.path.join(dp, f) for f in fns if f.endswith(".zip")]
     n_zip = 0; nested = []
-    # dedup theo duong dan THAT: cac CKPT_ROOTS long nhau se thay cung mot zip
-    # duoi hai ten khac nhau ("kinput/a.zip" vs "./kinput/a.zip").
+    # Deduplicate by real path: nested CKPT_ROOTS see the same archive under two
+    # names ("kinput/a.zip" vs "./kinput/a.zip").
     for zp in sorted({os.path.realpath(z) for z in zips}):
         k, nz = _index_zip(zp, tag, idx); n_zip += k; nested += nz
     _IDX[tag] = idx
-    log(f"[ckpt] ckpt_{tag}: tim thay {len(idx)} file .pt"
-        + (f"  ({n_zip} doc thang tu .zip)" if n_zip else ""))
+    log(f"[ckpt] ckpt_{tag}: found {len(idx)} .pt files"
+        + (f"  ({n_zip} read straight from .zip)" if n_zip else ""))
     if nested:
-        log(f"[ckpt] !! co .zip LONG TRONG .zip ({nested[:2]}) -- giai nen bot mot lop:")
+        log(f"[ckpt] !! nested .zip inside .zip ({nested[:2]}) -- unpack one layer first:")
         log(f"[ckpt]    !unzip -q '/kaggle/input/<ten>/*.zip' -d /kaggle/working/ckpt")
     if not idx:
         _diagnose(tag)
@@ -423,15 +423,15 @@ def load_sd(src):
     return d["sd"], d.get("acc")
 
 # ------------------------------------------------------------------ TRAIN (chi khi THIEU ckpt)
-# CHEP NGUYEN config cua param_{mode}_v2_shard*.py -- KE CA CONG THUC SEED.
-# Sai mot chi tiet la mang train ra KHAC mang goc, va so do duoc se khong con
-# ghep duoc voi param_geo_*.csv (anchor_check se bao lech).
+# Copied verbatim from the training scripts, including the seed formula. One
+# detail wrong and the network trained here differs from the original, and the
+# measurement no longer matches param_geo_*.csv (anchor_check would report it).
 TRAIN        = os.environ.get("TRAIN", "1") == "1"      # TRAIN=0 de tat han
 TRAIN_SEED_BASE = 4321
-TRAIN_ACTS   = ["relu","gelu","tanh","swish","softplus"]  # PHAI giu ca relu:
-                                                          # seed phu thuoc chi so trong DANH SACH NAY
+TRAIN_ACTS   = ["relu","gelu","tanh","swish","softplus"]  # relu must stay: the seed
+                                                          # depends on the index in this list
 TRAIN_LR, TRAIN_BATCH, TRAIN_WARMUP, TRAIN_CLIP = 0.1, 256, 8, 1.0
-TRAIN_EPOCHS = {"mlp": 30, "cnn": 100, "ts": 100}         # khac nhau theo kien truc
+TRAIN_EPOCHS = {"mlp": 30, "cnn": 100, "ts": 100}         # per architecture
 
 def set_seed(s): np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
 
@@ -462,7 +462,7 @@ def _train_xy(mode, train=True):
     _C[key] = (X, Y); return X, Y
 
 def train_one(mode, tag, regime, act, w, s):
-    """Train DUNG mot mang nhu ban goc, luu .pt, va ghi thang vao index."""
+    """Train exactly the original network, save the .pt, and register it in the index."""
     cfg = _MODE_CFG[mode]; ep = TRAIN_EPOCHS[mode]
     set_seed(TRAIN_SEED_BASE + REGIMES.index(regime)*100000
              + cfg["widths"].index(w)*100 + TRAIN_ACTS.index(act)*7 + s)
@@ -470,7 +470,7 @@ def train_one(mode, tag, regime, act, w, s):
     X, Y = _train_xy(mode, True)
     w0 = torch.cat([p.detach().reshape(-1) for p in m.parameters()]).clone()
     opt = torch.optim.SGD(m.opt_groups(TRAIN_LR), momentum=0.9)
-    wu = min(TRAIN_WARMUP, max(1, ep//5))          # warmup tuyen tinh -> cosine
+    wu = min(TRAIN_WARMUP, max(1, ep//5))          # linear warmup, then cosine decay
     def _ll(e):
         if e < wu: return (e+1)/wu
         pr = (e-wu)/max(ep-wu, 1); return 0.5*(1.0 + math.cos(math.pi*pr))
@@ -497,13 +497,13 @@ def train_one(mode, tag, regime, act, w, s):
     fn = f"{regime}_{act}_w{w}_s{s}.pt"
     path = os.path.join(ckpt_dir(tag), fn)
     torch.save({"sd": sd, "acc": acc, "dF": None, "wmove": wmove}, path)
-    _IDX.setdefault(tag, {})[fn] = path        # dang ky ngay, khoi quet lai
+    _IDX.setdefault(tag, {})[fn] = path        # register at once, so no rescan is needed
     del m
     if DEVICE == "cuda": torch.cuda.empty_cache()
     return sd, acc
 
 def load_or_train(mode, tag, regime, act, w, want):
-    """Nap ckpt; thieu thi TRAIN roi nap. Tra ve (sds, accs, got) theo dung thu tu seed."""
+    """Load checkpoints, training any that are missing. Returns (sds, accs, got) in seed order."""
     def _scan():
         sds = []; accs = []; got = []
         for s in range(NSEEDS):
@@ -552,24 +552,25 @@ def restore_csv(path, name):
         src = _seek_csv(name)
         if src and os.path.abspath(src) != os.path.abspath(path):
             try: shutil.copy(src, path); log(f"[resume] khoi phuc CSV tu {src}")
-            except Exception as e: log(f"[resume] copy that bai ({e!r}) -> chay tu dau")
-    # CSV cu phai co DUNG bo cot cua lan chay nay. Doi TGRID (hoac LAM_REL) la
-    # doi so cot -> noi tiep vao se ra file rang cua, pandas doc hong. Gap thi
-    # doi ten file cu di roi chay lai tu dau, con hon lam hong so da co.
+            except Exception as e: log(f"[resume] copy failed ({e!r}) -> starting from scratch")
+    # An existing CSV must carry exactly this run's columns. Changing TGRID (or
+    # LAM_REL) changes their number, so appending would produce a ragged file
+    # that pandas cannot read. In that case the old file is renamed and the run
+    # starts over, rather than corrupting data already collected.
     if os.path.exists(path):
         head = open(path).readline().strip()
         if head and head != ",".join(COLS()):
             bak = path + ".oldcols.bak"
             os.replace(path, bak)
-            log(f"[resume] !! CSV cu co BO COT KHAC ({len(head.split(','))} cot, "
-                f"lan nay {len(COLS())} cot) -- TGRID/LAM_REL da doi?")
-            log(f"[resume] !! da doi ten thanh {bak} -> chay lai tu dau")
+            log(f"[resume] !! the existing CSV has a different column set "
+                f"({len(head.split(','))} vs {len(COLS())}) -- did TGRID/LAM_REL change?")
+            log(f"[resume] !! renamed it to {bak} -> starting from scratch")
     _sanitize(path)
     if os.path.exists(path):
         n = max(sum(1 for _ in open(path)) - 1, 0)
-        log(f"[resume] {path}: {n} dong du lieu san co")
+        log(f"[resume] {path}: {n} existing data rows")
     else:
-        log(f"[resume] chua co CSV cu -> CHAY TU DAU (binh thuong neu lan dau)")
+        log(f"[resume] no existing CSV -> starting from scratch (normal on a first run)")
 
 def load_done(path):
     done = set()
@@ -588,11 +589,11 @@ def write_row(path, row):
 
 # ------------------------------------------------------------------ NEO VAO SO CU
 def anchor_check(mode, path):
-    """Doi chieu rq(0), rq(1/2), rq(1) vua do voi rq_A/rq_mid/rq_B trong param_geo."""
+    """Compare the rq(0), rq(1/2), rq(1) just measured with rq_A/rq_mid/rq_B in param_geo."""
     import pandas as pd
     src = _seek_csv(f"param_geo_{mode}.csv") or os.path.join("result-1", f"param_geo_{mode}.csv")
     if not src or not os.path.exists(src):
-        log(f"[anchor] khong thay param_geo_{mode}.csv -> bo qua doi chieu"); return
+        log(f"[anchor] param_geo_{mode}.csv not found -> skipping the cross-check"); return
     old = pd.read_csv(src)
     old = old[old.status.astype(str) == "ok"]
     if "lam_rel" in old:
@@ -604,7 +605,7 @@ def anchor_check(mode, path):
     for c in key[2:]: old[c] = pd.to_numeric(old[c], errors="coerce"); new[c] = pd.to_numeric(new[c], errors="coerce")
     m = new.merge(old[key + ["rq_A","rq_mid","rq_B"]], on=key, how="inner")
     if not len(m):
-        log("[anchor] khong khop cap nao (co the ckpt/seed khac) -> bo qua"); return
+        log("[anchor] no pair matched (different checkpoints or seeds?) -> skipping"); return
     ts = t_grid()
     c0, cm, c1 = f"rq_t{ts[0]:.3f}", f"rq_t{ts[int(np.argmin(np.abs(np.array(ts)-0.5)))]:.3f}", f"rq_t{ts[-1]:.3f}"
     log(f"[anchor] doi chieu {len(m)} cap voi param_geo_{mode}.csv (lam_rel=1e-2):")
@@ -616,7 +617,7 @@ def anchor_check(mode, path):
         worst = max(worst, float(rel.max()))
         log(f"[anchor]   {nm:6s}: lech trung vi={rel.median():.3%}  max={rel.max():.3%}")
     if worst > 0.01:
-        log("[anchor] !! lech > 1%: kiem tra FISHER_N / thu tu cap / phep can chinh hoan vi")
+        log("[anchor] !! off by more than 1%: check FISHER_N, the pair order, and the permutation alignment")
     else:
         log("[anchor] OK -- duong ong khop voi lan do cu")
 
@@ -627,7 +628,7 @@ def run_mode(mode):
     restore_csv(out, f"profile_length_{mode}.csv")
     done = load_done(out)
 
-    if not _build_index(tag):      # kiem tra ckpt TRUOC khi tai du lieu
+    if not _build_index(tag):      # check for checkpoints before loading any data
         if not TRAIN:
             log("[ckpt] -> DUNG LAI: thieu CHECKPOINT (.pt) va TRAIN=0.")
             log("[ckpt]    (.pt = de bai. Dat TRAIN=1 de tu train, hoac gan dataset ckpt vao.)")
@@ -644,12 +645,12 @@ def run_mode(mode):
         for w in cfg["widths"]:
             if out_of_time():
                 log(f"[budget] het {BUDGET_H}h -> dung sach"); return out
-            # --- bo qua o da xong TRUOC KHI load .pt ---
+            # --- skip finished cells before loading any .pt ---
             want = [(i, j) for (i, j) in
                     list(itertools.combinations(range(NSEEDS), 2))[:PAIRS]
                     if (regime, act, str(w), str(i), str(j)) not in done]
             if not want:
-                log(f"  [{regime}/{act}/w{w}] da xong -> bo qua"); continue
+                log(f"  [{regime}/{act}/w{w}] already done -> skipping"); continue
             try:
                 sds, accs, got = load_or_train(mode, tag, regime, act, w, want)
                 if len(sds) < 2:
