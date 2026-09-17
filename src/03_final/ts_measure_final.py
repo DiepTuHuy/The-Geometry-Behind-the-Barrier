@@ -212,7 +212,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
 # ==================================================================== DATA (CO NHAN)
 _CACHE = {}
 def load_data_xy():
-    """Khac geo script: geo chi can X (Fisher khong can y); o day can y cho L va rho*."""
+    """Unlike the geodesic script, which needs X only: L and rho* need the labels."""
     if "xy" in _CACHE: return _CACHE["xy"]
     if MODE == "mlp":
         ds = _tv().datasets.MNIST("./data", train=True, download=True)
@@ -267,7 +267,7 @@ def flen_at(m, pt, b, xf, delta, micro):
     d2 = max(_vdot(delta, delta), 1e-30)
     return 0.5*q, q/d2
 
-# ---------- may do do lech trac dia (sao y geo script) ----------
+# ---------- geodesic-deviation machinery, copied from the geodesic script ----------
 def dFz(m, p, b, x, z, v, eps, micro, rich):
     def cd(e):
         Fp = fisher_vp(m, _vaxpy(p,  e, z), b, x, v, micro)
@@ -420,7 +420,7 @@ def already_done(path, regime, act, w, i, j):
 
 # ==================================================================== DEV_REL
 def dev_rel_at_lambda(ref, pA, pB, b_ref, Xf, delta, lam_rel, lmax, ts_c):
-    """Dung Gamma(D,D) doc luoi t, tich phan Green -> dev_rel = sup_t||xi||/||D||."""
+    """Gamma(D,D) on the t grid, then the Green integral -> dev_rel = sup_t ||xi||/||D||."""
     lam = max(lam_rel*lmax, 1e-12); dn = _vnorm(delta)
     gammas = []; resids = []; fdis = []; x0 = None
     for tt in ts_c:
@@ -515,7 +515,7 @@ def run():
                                            R_end=f"{Rf(fl_end):.4f}", R_mid=f"{Rf(fl_mid):.4f}",
                                            R_tstar=f"{Rf(fl_star):.4f}")
 
-                            # ---- (4) sweep lambda cho dev_rel (chi LAM_PAIRS cap dau) ----
+                            # ---- (4) lambda sweep for dev_rel, on the first LAM_PAIRS pairs only ----
                             if PHASE == "all" and np_ < LAM_PAIRS:
                                 lmax = lam_max(ref, pA, b_ref, Xf, MICRO, POWER_ITERS, seed=17)
                                 for lr_ in LAM_RELS:
@@ -554,7 +554,7 @@ def aggregate(path):
     fin = os.path.join(OUT_DIR, f"final_{MODE}_cell.csv"); g.to_csv(fin, index=False)
     log(f"-> {fin}  ({len(g)} o)")
     cols = [c for c in ["t_star","rho_mid","R_end","R_mid","R_tstar"] if c in g]
-    log("\n  tom tat theo che do (trung vi):")
+    log("\n  summary per regime (median):")
     log(g.groupby("regime")[cols].median().round(3).to_string())
     if "devrel_lam0.1" in g and g["devrel_lam0.1"].notna().any():
         def _slope(gr, c):
@@ -580,11 +580,11 @@ def selfcheck(path):
     y = c.groupby(["regime","act","width"])["barrier"].median().rename("B_old").reset_index()
     m = x.merge(y, on=["regime","act","width"], how="inner")
     if len(m) == 0:
-        log("[selfcheck] khong khop o nao"); return
+        log("[selfcheck] no cell matched"); return
     rel = ((m.B_new - m.B_old).abs()/m.B_old.abs().clip(lower=1e-12))
-    log(f"[selfcheck] {len(m)} o | sai so tuong doi trung vi={rel.median():.3%} max={rel.max():.3%}")
+    log(f"[selfcheck] {len(m)} cells | median relative error={rel.median():.3%} max={rel.max():.3%}")
     if rel.median() > 0.05:
-        log("[selfcheck] !! lech >5%: EVAL_N khac tap danh gia lan do barrier goc -> chinh lai truoc khi tin so")
+        log("[selfcheck] !! off by more than 5%: EVAL_N differs from the evaluation set of the original barrier run; fix it before trusting these numbers")
 
 if __name__ == "__main__":
     log(f"=== measure_final[{MODE}] PHASE={PHASE} ===")

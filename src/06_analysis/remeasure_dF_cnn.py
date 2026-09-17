@@ -59,7 +59,7 @@ npt = len(glob.glob(os.path.join(CKPT_DIR_FOUND, "*.pt")))
 print(f"[preflight] module = {MODULE_PATH}")
 print(f"[preflight] ckpt   = {CKPT_DIR_FOUND}  ({npt} .pt files; a complete CNN set is 300)")
 if npt < 300:
-    print("[preflight] !! CANH BAO: it hon 300 ckpt — mot so cell se bi bao THIEU CKPT, van chay tiep.")
+    print("[preflight] !! WARNING: fewer than 300 checkpoints; some cells will report a missing checkpoint and be skipped.")
 
 QUICK = os.environ.get("QUICK", "0") == "1"   # plumbing check only: small iters/batch, never for a verdict
 

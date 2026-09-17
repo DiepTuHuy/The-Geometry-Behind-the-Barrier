@@ -62,7 +62,7 @@ LAM_RELS  = [1e-1, 1e-2, 1e-3]           # lambda = LAM_REL * ||F||_op
 # --- reference numbers from the ntk run, to compare the offset against ---
 NTK_DROP_MEAN = 0.236                    # mean of (exponent@1e-1 - exponent@1e-3)
 NTK_DROP_SD   = 0.032                    # standard deviation over 12 pairs
-NTK_REF_NAMES = ["lam_sweep_mlp_ntk.csv", "lam_sweep_mlp.csv"]              # ntk files to read directly, if presentoc truc tiep, neu co
+NTK_REF_NAMES = ["lam_sweep_mlp_ntk.csv", "lam_sweep_mlp.csv"]              # ntk files to read directly, if present
 
 TGRID     = 9                            # the Green grid of the geodesic script
 FISHER_N  = 2048
@@ -372,7 +372,7 @@ def _seek_csv(name):
     return None
 
 def _sanitize_csv():
-    """cat bo dong bi ghi do dang (session truoc bi giet giua chung) + dong loi."""
+    """Truncate a half-written row (previous session killed partway) and any error row."""
     if not os.path.exists(OUT_CSV): return
     lines = open(OUT_CSV).read().splitlines()
     if not lines: return
@@ -380,7 +380,7 @@ def _sanitize_csv():
     keep = [l for l in lines if l.strip() and len(l.split(",")) == nf]
     if len(keep) != len(lines):
         open(OUT_CSV, "w").write("\n".join(keep) + "\n")
-        log(f"[resume] bo {len(lines)-len(keep)} dong hong/loi -> se chay lai cac cap do")
+        log(f"[resume] dropped {len(lines)-len(keep)} corrupt or error rows -> those pairs will be redone")
 
 def restore_csv():
     """Copy an existing CSV out of the read-only dataset into OUT_DIR so done() sees it."""
@@ -396,7 +396,7 @@ def restore_csv():
     _sanitize_csv()
     if os.path.exists(OUT_CSV):
         n = max(sum(1 for _ in open(OUT_CSV)) - 1, 0)
-        log(f"[resume] {OUT_CSV}: {n} dong du lieu san co")
+        log(f"[resume] {OUT_CSV}: {n} existing data rows")
     else:
         log(f"[resume] no existing CSV -> starting from scratch (normal on a first run)")
 

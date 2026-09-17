@@ -58,9 +58,9 @@ OUT_DIR="."
 WIDTHS={"mlp":[64,128,256,512,1024,2048,4096],"cnn":[1,2,4,8],"ts":[64,128,256,512,1024,2048,4096]}[MODE]
 ACTS=["gelu","tanh"]              # two representative smooth activations; add swish/softplus if wanted
 REGIMES=["ntk","sp","mup"]
-NSEEDS=3                          # 3 seed/o du de doc slope
+NSEEDS=3                          # 3 seeds per cell is enough to read a slope
 BATCH=1024; MICRO=64; FD_EPS=3e-3
-NZ=3; PI_ITERS=8                  # so huong z + so vong power-iteration cho op-norm
+NZ=3; PI_ITERS=8                  # probe directions z, and power-iteration steps per operator norm
 DEVICE="cuda" if torch.cuda.is_available() else "cpu"
 DIN,K={"mlp":(784,10),"cnn":(None,10),"ts":(64,10)}[MODE]
 # geodesic hyperparameters, unused here but referenced by the shared helpers:
@@ -362,7 +362,7 @@ def _smoke_train(regime,act,w,seed):
 
 # ==================================================================== MAIN (decompose)
 def fisher_vp_frozen(m,p,b,x,v,micro,pr0):
-    """F~ = E J^T S0 J : S0 dong bang (pr0 precompute tai w0)."""
+    """Ftilde = E J^T S0 J, with the softmax factor S0 frozen at w0 (pr0 precomputed)."""
     B=x.shape[0]; acc=None
     for i in range(0,B,micro):
         xb=x[i:i+micro]; prb=pr0[i:i+micro]
@@ -382,7 +382,7 @@ def _dFz_apply(m,p,b,x,z,v,micro,pr0):
     return {k:(Fp[k]-Fm[k])/(2*FD_EPS) for k in p}
 
 def opnorm_dz(apply_fn, p, seed):
-    """||A||_op cho A doi xung (A=d_z F...) qua power-iteration."""
+    """||A||_op for symmetric A (A = d_z F, ...) by power iteration."""
     g=torch.Generator(device=DEVICE).manual_seed(seed)
     v={k:torch.randn(x_.shape,generator=g,device=DEVICE,dtype=x_.dtype) for k,x_ in p.items()}
     v=_vscale(v,1.0/max(_vnorm(v),1e-30)); lam=0.0

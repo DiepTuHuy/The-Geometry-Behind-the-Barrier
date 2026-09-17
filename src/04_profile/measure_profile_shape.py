@@ -501,7 +501,7 @@ def find_ckpt(tag, regime, act, w, s):
     return _build_index(tag).get(f"{regime}_{act}_w{w}_s{s}.pt")
 
 def load_sd(src):
-    """src la duong dan .pt, HOAC ("zip", duong_dan_zip, ten_entry)."""
+    """src is a .pt path, or the tuple ("zip", zip_path, entry_name)."""
     if isinstance(src, tuple):
         buf = io.BytesIO(_zopen(src[1]).read(src[2]))
         try: d = torch.load(buf, map_location="cpu", weights_only=False)
@@ -511,7 +511,7 @@ def load_sd(src):
         except TypeError: d = torch.load(src, map_location="cpu")
     return d["sd"], d.get("acc")
 
-# ------------------------------------------------------------------ TRAIN (chi khi THIEU ckpt)
+# --------------------------------------------------------- TRAIN (only when checkpoints are missing)
 # Copied verbatim from the training scripts, including the seed formula. One
 # detail wrong and the network trained here differs from the original, and the
 # measurement no longer matches param_geo_*.csv (anchor_check would report it).
@@ -528,7 +528,7 @@ def ckpt_dir(tag):
     d = os.path.join(OUT_DIR, f"ckpt_{tag}"); os.makedirs(d, exist_ok=True); return d
 
 def _train_xy(mode, train=True):
-    """Du lieu CO NHAN de train (khac load_X: Fisher khong can nhan)."""
+    """Labelled data for training, unlike load_X: F does not need the labels."""
     key = ("xy", mode, train)
     if key in _C: return _C[key]
     if mode == "mlp":
@@ -601,7 +601,7 @@ def load_or_train(mode, tag, regime, act, w, want):
             sd, acc = load_sd(cp); sds.append(sd); accs.append(acc); got.append(s)
         return sds, accs, got
     sds, accs, got = _scan()
-    need = 1 + max(max(i, j) for (i, j) in want)      # chi can toi seed nay
+    need = 1 + max(max(i, j) for (i, j) in want)      # only seeds up to this index are needed
     miss = [s for s in range(need) if s not in got]
     if miss and TRAIN:
         log(f"  [{regime}/{act}/w{w}] THIEU ckpt seed {miss} -> TRAIN "
@@ -639,7 +639,7 @@ def _sanitize(path):
     keep = [l for l in lines if l.strip() and len(l.split(",")) == nf]
     if len(keep) != len(lines):
         open(path, "w").write("\n".join(keep) + "\n")
-        log(f"[resume] bo {len(lines)-len(keep)} dong hong -> se chay lai cac cap do")
+        log(f"[resume] dropped {len(lines)-len(keep)} corrupt rows -> those pairs will be redone")
 
 def restore_csv(path, name):
     if not os.path.exists(path):
@@ -692,7 +692,7 @@ def load_reuse(mode):
     d = pd.read_csv(src); d = d[d.status.astype(str) == "ok"]
     xc = [f"xinorm_t{t:.3f}" for t in t_grid()]
     if not set(xc).issubset(d.columns):
-        log(f"[reuse] {src} khong khop TGRID={TGRID} -> se tu tinh Gamma"); return {}
+        log(f"[reuse] {src} does not match TGRID={TGRID} -> computing Gamma here"); return {}
     if "lam_rel" in d:
         d = d[pd.to_numeric(d.lam_rel, errors="coerce").round(6) == round(LAM_REL, 6)]
     out = {}
@@ -719,7 +719,7 @@ def _shape_row(mode, regime, act, w, i, j, xin, dn, src, cg="", fd="", aA="", aB
     for c, v in zip(s_cols(), shape): row[c] = f"{v:.4f}"
     return row, dev_rel, t_peak
 
-# ------------------------------------------------------------------ NEO VAO SO CU
+# ------------------------------------------------------------- CROSS-CHECK vs EARLIER RUN
 def anchor_check(mode, path):
     import pandas as pd
     src = _seek_csv(f"param_geo_{mode}.csv") or os.path.join("result-1", f"param_geo_{mode}.csv")
@@ -730,7 +730,7 @@ def anchor_check(mode, path):
         old = old[pd.to_numeric(old.lam_rel, errors="coerce").round(6) == round(LAM_REL, 6)]
     new = pd.read_csv(path); new = new[new.status.astype(str) == "ok"]
     if not len(new) or not len(old):
-        log("[anchor] chua co du lieu de doi chieu"); return
+        log("[anchor] no data to cross-check against"); return
     key = ["regime","act","width","seedA","seedB"]
     for c in key[2:]:
         old[c] = pd.to_numeric(old[c], errors="coerce"); new[c] = pd.to_numeric(new[c], errors="coerce")
@@ -739,9 +739,9 @@ def anchor_check(mode, path):
         log("[anchor] no pair matched -> skipping"); return
     a = pd.to_numeric(m["dev_rel"], errors="coerce"); b = pd.to_numeric(m["dev_rel_old"], errors="coerce")
     rel = ((a - b).abs()/b.abs().clip(lower=1e-30)).dropna()
-    log(f"[anchor] doi chieu {len(m)} cap: dev_rel lech trung vi={rel.median():.3%} max={rel.max():.3%}")
-    log("[anchor] " + ("OK -- khop lan do cu" if rel.max() <= 0.02 else
-                       "!! lech > 2%: kiem tra FD_EPS / CG_TOL / LAM_REL"))
+    log(f"[anchor] cross-checked {len(m)} pairs: dev_rel median deviation={rel.median():.3%} max={rel.max():.3%}")
+    log("[anchor] " + ("OK -- matches the earlier run" if rel.max() <= 0.02 else
+                       "!! off by more than 2%: check FD_EPS / CG_TOL / LAM_REL"))
 
 # ------------------------------------------------------------------ MAIN
 def run_mode(mode):
@@ -779,7 +779,7 @@ def run_mode(mode):
                 log(f"  [{i}-{j}] (reuse) dev_rel={dv:.3e} t_peak={tp:.3f}")
             if not left: continue
 
-            # ---- (B) con lai: tu tinh Gamma ----
+            # ---- (B) the rest: compute Gamma here ----
             try:
                 if Xf is None:
                     Xf = load_X(mode)[:FISHER_N].to(DEVICE)
@@ -787,8 +787,8 @@ def run_mode(mode):
                 if len(sds) < 2:
                     miss = [x for x in range(NSEEDS) if x not in got]
                     n_skip += 1
-                    log(f"  [{regime}/{act}/w{w}] THIEU DU LIEU: chi co {len(sds)}/{NSEEDS} ckpt "
-                        f"(thay seed {got}, thieu {miss}) -- can >=2 de tao 1 cap -> bo o nay")
+                    log(f"  [{regime}/{act}/w{w}] MISSING DATA: only {len(sds)}/{NSEEDS} checkpoints "
+                        f"(found seeds {got}, missing {miss}) -- 2 are needed for a pair, skipping this cell")
                     continue
                 log(f"=== {regime}/{act}/w{w}  ({len(sds)} nets, {len(left)} cap phai tinh) ===")
                 ref = build_net(mode, w, act, regime).to(DEVICE).eval()
@@ -843,7 +843,7 @@ def run_mode(mode):
                 write_row(out, dict(mode=mode, regime=regime, act=act, width=w,
                                     status="cell-error:"+repr(e)[:40]))
     if n_skip:
-        log(f"!! {n_skip} o bi BO vi thieu ckpt -- xem cac dong 'THIEU DU LIEU' o tren.")
+        log(f"!! {n_skip} cells skipped for missing checkpoints -- see the MISSING DATA lines above.")
     log(f"DONE shape profile [{mode}]")
     return out
 
@@ -861,7 +861,7 @@ def aggregate(mode, path):
 
     log("\n  shape of the deviation bump (median per regime):")
     log(f"    {'regime':6s} {'dev_rel':>11s} {'t_peak':>8s} {'skew':>7s}   "
-        f"(t_peak=0.5 & skew=0 => doi xung nhu mo hinh do choi)")
+        f"(t_peak=0.5 and skew=0 means symmetric, as in the toy model)")
     for reg, s in g.groupby("regime"):
         # index with [], not attribute access: 'skew' collides with a DataFrame method
         log(f"    {reg:6s} {s['dev_rel'].median():11.4e} "

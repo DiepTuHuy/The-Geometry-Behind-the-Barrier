@@ -112,8 +112,8 @@ def main():
     model = NetMLP(width, act, regime).to(DEV)
     gs = {"h1":width, "h2":width}
 
-    # luoi min chua tron ven luoi 41 diem cua bai:  (tg_fine-1) % 40 == 0
-    assert (tg_fine-1) % (TG_PAPER-1) == 0, "luoi min phai chua luoi 41 diem"
+    # the fine grid must contain the paper's 41-point grid exactly: (tg_fine-1) % 40 == 0
+    assert (tg_fine-1) % (TG_PAPER-1) == 0, "the fine grid must contain the 41-point grid"
     step = (tg_fine-1)//(TG_PAPER-1)
     ts = np.linspace(0,1,tg_fine)
 

@@ -113,7 +113,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
-def _tv():   # torchvision chi can cho mlp/cnn (ts la synthetic)
+def _tv():   # torchvision is needed for mlp/cnn only; ts is synthetic
     import torchvision; return torchvision
 
 # ==================================================================== CONFIG
@@ -574,7 +574,7 @@ def _done_in(path, regime, act, w, i, j, lam_rel):
 
 # ==================================================================== SELF-TEST
 def self_test():
-    """Gamma(dd) qua vp == Gamma dense, va cau phuong Green == nghiem giai tich."""
+    """Gamma by vector products equals dense Gamma, and the Green quadrature equals the analytic solution."""
     log("  [self-test] Gamma(dd) vp==dense + Green ...")
     old = torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
     torch.manual_seed(0); m = NetMLP(6, "tanh", "ntk", din=4, k=3).eval(); x = torch.randn(8, 4)
@@ -641,7 +641,7 @@ def _fit_alpha(width, val):
     return (round(-b, 4), round(float(r2), 4))
 
 def _cells():
-    """Danh sach (regime, act) sau khi loc theo GEO_SHARD / GEO_REGIMES / GEO_ACTS."""
+    """The (regime, act) pairs left after filtering by GEO_SHARD / GEO_REGIMES / GEO_ACTS."""
     plan = [SHARD_PLAN[int(ONLY_SHARD)]] if ONLY_SHARD is not None else list(SHARD_PLAN.values())
     out = []
     for regime, acts_all in plan:
@@ -938,7 +938,7 @@ def _seed_resume():
     so the choice can be checked.
 
     GEO_RESUME=<path> forces that exact file.
-    GEO_RESUME=none         tat resume, do lai tu dau."""
+    GEO_RESUME=none         disable resume and measure everything again."""
     import shutil
     dst = os.path.join(OUT_DIR, f"param_geo_{MODE}.csv")
     forced = _env("GEO_RESUME")
@@ -1023,7 +1023,7 @@ def _self_path():
         if os.path.exists(p): return p
     except NameError:
         pass
-    try:                                   # dang o notebook
+    try:                                   # running inside a notebook
         from IPython import get_ipython
         cells = get_ipython().user_ns.get("In") or []
         src = next(c for c in reversed(cells) if "def run_geo" in c and "def _spawn_workers" in c)
@@ -1051,7 +1051,7 @@ def worker_csv(k, pid=None):
     return os.path.join(OUT_DIR, f"param_geo_{MODE}.gpu{k}.{pid or os.getpid()}.csv")
 
 def _merge_worker_csvs(base):
-    """Gop param_geo_{mode}.gpu*.csv vao file chinh (bo header trung)."""
+    """Merge param_geo_{mode}.gpu*.csv into the main file, dropping repeated headers."""
     parts = sorted(glob.glob(os.path.join(OUT_DIR, f"param_geo_{MODE}.gpu*.csv")))
     if not parts: return
     have_header = os.path.exists(base)
@@ -1069,7 +1069,7 @@ def _merge_worker_csvs(base):
 def _spawn_workers(tasks, self_path):
     """Run one child process per GPU; True if all of them exited cleanly."""
     import subprocess
-    groups = [tasks[k::len(GPUS)] for k in range(len(GPUS))]   # chia xen ke -> can tai
+    groups = [tasks[k::len(GPUS)] for k in range(len(GPUS))]   # interleave, so the load is balanced
     procs = []
     for k, (gpu, grp) in enumerate(zip(GPUS, groups)):
         if not grp: continue

@@ -48,7 +48,7 @@ import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch.func import functional_call, jvp as _fjvp, vjp as _fvjp, jacrev as _jacrev, grad as _grad
 
-# ======================= TAT CA THAM SO DA CHOT SAN =========================
+# ======================= FIXED PARAMETERS ===================================
 MODE      = "mlp"
 RUN_TAG   = "pmlp_v2"
 REGIMES   = ["ntk"]                      # chi NTK
@@ -416,7 +416,7 @@ def report():
     print("\n" + "="*66)
     print(" dev_rel EXPONENT IN WIDTH, THREE-DECADE DAMPING SWEEP  (ntk / MLP)")
     print("="*66)
-    print(f"{'act':<10}{'lam=1e-1':>13}{'lam=1e-2':>13}{'lam=1e-3':>13}{'do lech':>12}")
+    print(f"{'act':<10}{'lam=1e-1':>13}{'lam=1e-2':>13}{'lam=1e-3':>13}{'spread':>12}")
     print("-"*66)
     spread = []
     for act, s in g.groupby("act"):
@@ -427,7 +427,7 @@ def report():
         print(f"{act:<10}{v[0]:>13.3f}{v[1]:>13.3f}{v[2]:>13.3f}{sp:>12.3f}")
     print("-"*66)
     mx = np.nanmax(spread) if spread else float("nan")
-    print(f"do lech LON NHAT giua cac lambda: {mx:.3f}")
+    print(f"largest spread across the three lambdas: {mx:.3f}")
     if mx < 0.10:
         print("=> the exponent is invariant under damping; the shape conclusion holds.")
         print("   For the appendix: the dev_rel exponent is invariant across three decades of damping.")

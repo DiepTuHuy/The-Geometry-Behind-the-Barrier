@@ -364,7 +364,7 @@ def cg_solve(m, p, b, x, rhs, lam, micro, x0=None, iters=80, tol=1e-6):
     return xk, math.sqrt(_vdot(r, r)/r0)
 
 def christoffel_dd(m, p, b, x, delta, lam, micro, x0=None):
-    """Gamma(D,D) = 1/2 G_F^{-1}[2 t1 - m].  Tra ve them ca t1, m de TACH RIENG."""
+    """Gamma(D,D) = 1/2 G_F^{-1}[2 t1 - m]. Also returns t1 and m separately."""
     dn = _vnorm(delta); dhat = _vscale(delta, 1.0/dn)
     d1 = dFz(m, p, b, x, dhat, dhat, FD_EPS,   micro)      # central diff @ eps
     d2 = dFz(m, p, b, x, dhat, dhat, FD_EPS/2, micro)      # @ eps/2
@@ -529,7 +529,7 @@ def find_ckpt(tag, regime, act, w, s):
     return _build_index(tag).get(f"{regime}_{act}_w{w}_s{s}.pt")
 
 def load_sd(src):
-    """src la duong dan .pt, HOAC ("zip", duong_dan_zip, ten_entry)."""
+    """src is a .pt path, or the tuple ("zip", zip_path, entry_name)."""
     if isinstance(src, tuple):
         buf = io.BytesIO(_zopen(src[1]).read(src[2]))
         try: d = torch.load(buf, map_location="cpu", weights_only=False)
@@ -539,7 +539,7 @@ def load_sd(src):
         except TypeError: d = torch.load(src, map_location="cpu")
     return d["sd"], d.get("acc")
 
-# ------------------------------------------------------------------ TRAIN (chi khi THIEU ckpt)
+# --------------------------------------------------------- TRAIN (only when checkpoints are missing)
 # Copied verbatim from the training scripts, including the seed formula. One
 # detail wrong and the network trained here differs from the original, and the
 # measurement no longer matches param_geo_*.csv (anchor_check would report it).
@@ -556,7 +556,7 @@ def ckpt_dir(tag):
     d = os.path.join(OUT_DIR, f"ckpt_{tag}"); os.makedirs(d, exist_ok=True); return d
 
 def _train_xy(mode, train=True):
-    """Du lieu CO NHAN de train (khac load_X: Fisher khong can nhan)."""
+    """Labelled data for training, unlike load_X: F does not need the labels."""
     key = ("xy", mode, train)
     if key in _C: return _C[key]
     if mode == "mlp":
@@ -629,7 +629,7 @@ def load_or_train(mode, tag, regime, act, w, want):
             sd, acc = load_sd(cp); sds.append(sd); accs.append(acc); got.append(s)
         return sds, accs, got
     sds, accs, got = _scan()
-    need = 1 + max(max(i, j) for (i, j) in want)      # chi can toi seed nay
+    need = 1 + max(max(i, j) for (i, j) in want)      # only seeds up to this index are needed
     miss = [s for s in range(need) if s not in got]
     if miss and TRAIN:
         log(f"  [{regime}/{act}/w{w}] THIEU ckpt seed {miss} -> TRAIN "
@@ -644,7 +644,7 @@ def load_or_train(mode, tag, regime, act, w, want):
 # ------------------------------------------------------------------ CSV
 def t_grid(): return list(np.linspace(0, 1, TGRID))
 def g_cols():  return [f"gnorm_t{t:.3f}"  for t in t_grid()]   # ||Gamma(t)||
-def x_cols():  return [f"xinorm_t{t:.3f}" for t in t_grid()]   # ||xi(t)||  (san pham phu)
+def x_cols():  return [f"xinorm_t{t:.3f}" for t in t_grid()]   # ||xi(t)||, the free by-product
 def a_cols():  return [f"t1norm_t{t:.3f}" for t in t_grid()]   # ||2(d_D F)D|| / 2
 def b_cols():  return [f"mnorm_t{t:.3f}"  for t in t_grid()]   # ||grad(D^T F D)||
 def c_cols():  return [f"cos_t1m_t{t:.3f}" for t in t_grid()]  # cos(t1, m)
@@ -670,7 +670,7 @@ def _sanitize(path):
     keep = [l for l in lines if l.strip() and len(l.split(",")) == nf]
     if len(keep) != len(lines):
         open(path, "w").write("\n".join(keep) + "\n")
-        log(f"[resume] bo {len(lines)-len(keep)} dong hong -> se chay lai cac cap do")
+        log(f"[resume] dropped {len(lines)-len(keep)} corrupt rows -> those pairs will be redone")
 
 def restore_csv(path, name):
     if not os.path.exists(path):
@@ -712,7 +712,7 @@ def write_row(path, row):
         if new: f.write(",".join(cols) + "\n")
         f.write(",".join(str(row.get(c, "")) for c in cols) + "\n"); f.flush()
 
-# ------------------------------------------------------------------ NEO VAO SO CU
+# ------------------------------------------------------------- CROSS-CHECK vs EARLIER RUN
 def anchor_check(mode, path):
     import pandas as pd
     src = _seek_csv(f"param_geo_{mode}.csv") or os.path.join("result-1", f"param_geo_{mode}.csv")
@@ -723,7 +723,7 @@ def anchor_check(mode, path):
         old = old[pd.to_numeric(old.lam_rel, errors="coerce").round(6) == round(LAM_REL, 6)]
     new = pd.read_csv(path); new = new[new.status.astype(str) == "ok"]
     if not len(new) or not len(old):
-        log("[anchor] chua co du lieu de doi chieu"); return
+        log("[anchor] no data to cross-check against"); return
     key = ["regime","act","width","seedA","seedB"]
     for c in key[2:]:
         old[c] = pd.to_numeric(old[c], errors="coerce"); new[c] = pd.to_numeric(new[c], errors="coerce")
@@ -732,7 +732,7 @@ def anchor_check(mode, path):
     if not len(m):
         log("[anchor] no pair matched -> skipping"); return
     ts = t_grid(); mid = int(np.argmin(np.abs(np.array(ts) - 0.5)))
-    log(f"[anchor] doi chieu {len(m)} cap voi param_geo_{mode}.csv (lam_rel={LAM_REL:g}):")
+    log(f"[anchor] cross-checking {len(m)} pairs against param_geo_{mode}.csv (lam_rel={LAM_REL:g}):")
     worst = 0.0
     for new_c, old_c, nm in [(f"gnorm_t{ts[mid]:.3f}", "gamma_mid_old", "||Gamma(1/2)||"),
                              ("dev_rel", "dev_rel_old", "dev_rel")]:
@@ -744,7 +744,7 @@ def anchor_check(mode, path):
     if worst > 0.02:
         log("[anchor] !! off by more than 2%: check FD_EPS / CG_TOL / LAM_REL against the earlier run")
     else:
-        log("[anchor] OK -- duong ong khop voi lan do cu")
+        log("[anchor] OK -- the pipeline matches the earlier run")
 
 # ------------------------------------------------------------------ MAIN
 def run_mode(mode):
@@ -755,11 +755,11 @@ def run_mode(mode):
 
     if not _build_index(tag):      # check for checkpoints before loading any data
         if not TRAIN:
-            log("[ckpt] -> DUNG LAI: thieu CHECKPOINT (.pt) va TRAIN=0.")
-            log("[ckpt]    (.pt = de bai. Dat TRAIN=1 de tu train, hoac gan dataset ckpt vao.)")
+            log("[ckpt] -> stopping: checkpoints (.pt) are missing and TRAIN=0.")
+            log("[ckpt]    (.pt files are the input. Set TRAIN=1 to train them here, or attach a checkpoint dataset.)")
             return out
-        log(f"[ckpt] -> khong co ckpt nao: SE TU TRAIN ({TRAIN_EPOCHS[mode]} epoch/mang).")
-        log(f"[ckpt]    luu vao {ckpt_dir(tag)} -- nho Save Version de lan sau khoi train lai.")
+        log(f"[ckpt] -> no checkpoints found: training them here ({TRAIN_EPOCHS[mode]} epochs per net).")
+        log(f"[ckpt]    saved to {ckpt_dir(tag)} -- keep them so the next run need not retrain.")
     X = load_X(mode); Xf = X[:FISHER_N].to(DEVICE)
     ts = t_grid(); G = green_matrix(ts); dt = ts[1]-ts[0]
     mid = int(np.argmin(np.abs(np.array(ts) - 0.5)))
@@ -786,10 +786,10 @@ def run_mode(mode):
                 if len(sds) < 2:
                     miss = [x for x in range(NSEEDS) if x not in got]
                     n_skip += 1
-                    log(f"  [{regime}/{act}/w{w}] THIEU DU LIEU: chi co {len(sds)}/{NSEEDS} ckpt "
-                        f"(thay seed {got}, thieu {miss}) -- can >=2 de tao 1 cap -> bo o nay")
+                    log(f"  [{regime}/{act}/w{w}] MISSING DATA: only {len(sds)}/{NSEEDS} checkpoints "
+                        f"(found seeds {got}, missing {miss}) -- 2 are needed for a pair, skipping this cell")
                     continue
-                log(f"=== {regime}/{act}/w{w}  ({len(sds)} nets, {len(want)} cap con lai) ===")
+                log(f"=== {regime}/{act}/w{w}  ({len(sds)} nets, {len(want)} pairs left) ===")
                 ref = build_net(mode, w, act, regime).to(DEVICE).eval()
                 p_ref, b_ref = _pb(ref)
                 ag, gs = perm_spec(mode, build_net(mode, w, act, regime))
@@ -859,14 +859,14 @@ def run_mode(mode):
                     el = time.time() - t0; rate = el/n_done
                     rest = max(todo - n_done, 0)
                     log(f"  [tien do] {n_done} cap / {el/60:.1f} phut "
-                        f"(~{rate:.0f}s moi cap)  |  con ~{rest} cap "
+                        f"(~{rate:.0f}s per pair)  |  ~{rest} pairs left "
                         f"=> ~{rest*rate/3600:.1f}h nua")
             except Exception as e:
                 traceback.print_exc()
                 write_row(out, dict(mode=mode, regime=regime, act=act, width=w,
                                     status="cell-error:"+repr(e)[:40]))
     if n_skip:
-        log(f"!! {n_skip} o bi BO vi thieu ckpt -- xem cac dong 'THIEU DU LIEU' o tren.")
+        log(f"!! {n_skip} cells skipped for missing checkpoints -- see the MISSING DATA lines above.")
     log(f"DONE christoffel profile [{mode}]")
     return out
 
@@ -885,8 +885,8 @@ def aggregate(mode, path):
 
     ts = np.array(t_grid()); mid = int(np.argmin(np.abs(ts - 0.5)))
     gm, cm = g_cols()[mid], c_cols()[mid]
-    log("\n  Christoffel tai trung diem, median theo che do:")
-    log(f"    {'regime':6s} {'||Gamma(1/2)||':>15s} {'cos(t1,m)':>10s}  (cos ~ +1 => hai so hang khu nhau)")
+    log("\n  Christoffel at the midpoint, median per regime:")
+    log(f"    {'regime':6s} {'||Gamma(1/2)||':>15s} {'cos(t1,m)':>10s}  (cos ~ +1 means the two terms cancel)")
     for reg, s in g.groupby("regime"):
         log(f"    {reg:6s} {s[gm].median():15.4e} {s[cm].median():10.3f}")
 
