@@ -23,14 +23,17 @@ pip install -r requirements-figures.txt
 bash scripts/make_all.sh
 ```
 
-Runs in seconds. Output appears in `figures/main/` (the six main-text figures) and
-`figures/appendix/` (the nine appendix figures) — `.pdf` for the paper, `.png` where a
-raster is useful. Each script also prints the measured numbers it plotted, so a number
-quoted in the text can be checked against the figure that carries it.
+Runs in seconds. Output appears in `figures/main/` (Figures 1–5) and
+`figures/appendix/` (Figures 6–12) — `.pdf` for the paper, `.png` where a raster is
+useful. Each script is named for the figure number it carries in the paper, and prints
+the measured numbers it plotted, so a number quoted in the text can be checked against
+the figure that carries it.
 
-*Verified: all fifteen figure scripts run from the committed CSVs alone, with no GPU,
-no `torch` and no dataset download, and reproduce every PDF and PNG committed under
-`figures/` byte for byte.*
+*Verified: nine of the twelve figure scripts run from the committed CSVs alone, with no
+GPU, no `torch` and no dataset download, and reproduce the committed PDFs up to the
+timestamp matplotlib embeds. `Figure2.py` needs `data/param_geo_mlp_cg1000.csv`, and
+`Figure11.py` and `Figure12.py` need `fig_data.load_scale`; those three are not yet
+reproducible from this repository alone.*
 
 Re-running the **measurements** needs a GPU and days of compute — see
 [docs/RUNBOOK.md](docs/RUNBOOK.md).
@@ -83,8 +86,8 @@ scripts/                   one script per figure; READS CSV ONLY, never measures
   make_all.sh              one command, every figure
 
 figures/                   generated .pdf and .png -- exactly what the paper includes
-  main/                    the six main-text figures
-  appendix/                the nine appendix figures
+  main/                    Figures 1-5, plus scripts kept under their working names
+  appendix/                Figures 6-12, likewise
 
 docs/                      runbook, configuration snapshot, data dictionary
 tools/                     read-only helpers (no GPU, no torch)
