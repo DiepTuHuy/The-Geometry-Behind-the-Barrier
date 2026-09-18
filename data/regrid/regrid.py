@@ -99,8 +99,7 @@ def main():
     ck = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ckpt", "ckpt_pmlp_v2")
 
     import torchvision
-    ds = torchvision.datasets.MNIST(os.path.expanduser("~/Downloads/Exp_hung/data"),
-                                    train=True, download=False)
+    ds = torchvision.datasets.MNIST("./data", train=True, download=False)
     X = (((ds.data.float()/255.0)-0.1307)/0.3081).reshape(-1,784)[:EVAL_N].to(DEV)
     Y = ds.targets.clone()[:EVAL_N].to(DEV)
 
