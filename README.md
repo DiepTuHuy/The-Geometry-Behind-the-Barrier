@@ -9,7 +9,24 @@ over a full grid:
 
 > 3 architectures (MLP/MNIST · CNN/FashionMNIST · Teacher–Student)
 > × 3 regimes × 5 activations × 4–7 widths × 5 seeds
-> = **270 cells, 3 150 measured rows, all complete.**
+> = **270 cells, 1 350 trained networks, 2 700 aligned pairs.**
+>
+> Every Fisher quantity uses the four smooth activations only, since ReLU is not
+> C³ — **216 reported cells, 2 160 aligned pairs.**
+
+---
+
+## Check the paper's numbers — one command, no GPU
+
+```bash
+pip install -r requirements-figures.txt
+python verify.py
+```
+
+Recomputes every headline number in the paper from the committed CSVs and prints
+it next to the value the paper states. Seventeen checks, a few seconds, exit code
+0 only if all of them match. It reuses the figure pipeline rather than
+reimplementing it, so a number that passes here is the number the figure draws.
 
 ---
 
