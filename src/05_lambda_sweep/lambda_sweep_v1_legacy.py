@@ -400,7 +400,7 @@ def run():
 
 def report():
     import pandas as pd
-    if not os.path.exists(OUT_CSV): log("khong co du lieu"); return
+    if not os.path.exists(OUT_CSV): log("no data"); return
     d = pd.read_csv(OUT_CSV); d = d[d.status.astype(str) == "ok"].copy()
     cols = ["devrel_1e-1","devrel_1e-2","devrel_1e-3"]
     for c in cols + ["width"]: d[c] = pd.to_numeric(d[c], errors="coerce")

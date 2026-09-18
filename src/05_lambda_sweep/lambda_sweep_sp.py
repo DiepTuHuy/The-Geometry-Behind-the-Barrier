@@ -389,7 +389,7 @@ def restore_csv():
             src = _seek_csv(name)
             if src and os.path.abspath(src) != os.path.abspath(OUT_CSV):
                 try:
-                    shutil.copy(src, OUT_CSV); log(f"[resume] khoi phuc CSV tu {src}")
+                    shutil.copy(src, OUT_CSV); log(f"[resume] restored the CSV from {src}")
                     break
                 except Exception as e:
                     log(f"[resume] copy failed ({e!r}) -> starting from scratch")
@@ -513,10 +513,10 @@ def _pair_drops(d):
 def report():
     import pandas as pd
     RG = REGIMES[0]
-    if not os.path.exists(OUT_CSV): log("khong co du lieu"); return
+    if not os.path.exists(OUT_CSV): log("no data"); return
     d = pd.read_csv(OUT_CSV); d = d[d.status.astype(str) == "ok"].copy()
     for c in COLS3 + ["width", "lam_max"]: d[c] = pd.to_numeric(d[c], errors="coerce")
-    if len(d) == 0: log("khong co dong 'ok'"); return
+    if len(d) == 0: log("no 'ok' rows"); return
     g = d.groupby(["act", "width"])[COLS3].median().reset_index()
     g = g.merge(d.groupby(["act", "width"]).lam_max.median().rename("Fop").reset_index(),
                 on=["act", "width"])

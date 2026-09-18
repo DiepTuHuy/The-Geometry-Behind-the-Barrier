@@ -134,7 +134,7 @@ SMOKE      = _env("GEO_SMOKE", "0") == "1"
 ONLY_SHARD = _env("GEO_SHARD")
 ALLOW_RELU = _env("GEO_ALLOW_RELU", "0") == "1"
 
-SMOOTH_ACTS = ["gelu", "tanh", "swish", "softplus"]     # C^3 -- hop le cho Christoffel
+SMOOTH_ACTS = ["gelu", "tanh", "swish", "softplus"]     # C^3, so a finite-difference Christoffel symbol is valid
 ALL_ACTS    = ["relu"] + SMOOTH_ACTS
 DEFAULT_ACTS = ALL_ACTS if ALLOW_RELU else SMOOTH_ACTS
 
@@ -719,7 +719,7 @@ def run_geo(tasks=None, out=None):
                                                     status="error:" + repr(e)[:40])); continue
                             for lr_ in lam_rels:
                                 if RESUME and already_done(read_paths, regime, act, w, i, j, lr_):
-                                    log(f"  [pair {i}-{j} lam_rel={lr_}] da co -> skip"); continue
+                                    log(f"  [pair {i}-{j} lam_rel={lr_}] already measured -> skip"); continue
                                 try:
                                     lam = max(lr_ * lmax, 1e-12)
                                     ts = list(np.linspace(0, 1, GEO_TGRID))
@@ -949,7 +949,7 @@ def _seed_resume():
         log(f"[resume] found {dst} ({_count_ok(dst)} ok rows) -> continuing"); return
     if forced:
         if not os.path.exists(forced):
-            raise SystemExit(f"GEO_RESUME={forced} khong ton tai")
+            raise SystemExit(f"GEO_RESUME={forced} does not exist")
         cands = [forced]
     else:
         cands = []
@@ -1082,7 +1082,7 @@ def _spawn_workers(tasks, self_path):
         procs.append(subprocess.Popen([sys.executable, self_path], env=env))
     rc = [p.wait() for p in procs]
     for k, r in enumerate(rc):
-        if r != 0: log(f"!! worker {k} thoat voi ma {r}")
+        if r != 0: log(f"!! worker {k} exited with code {r}")
     return all(r == 0 for r in rc)
 
 def run_mode(mode):
@@ -1102,7 +1102,7 @@ def run_mode(mode):
     _seed_resume()
     base = base_csv()
     self_path = _self_path() if (GPUS and len(GPUS) > 1) else None
-    if GPUS and len(GPUS) > 1 and self_path:     # --- parent, nhieu GPU ---
+    if GPUS and len(GPUS) > 1 and self_path:     # --- parent, multiple GPUs ---
         # Download the dataset before spawning. Left to themselves the workers
         # write into ./data at the same time: one is mid-write while the other
         # checks the md5, reports "File not found or corrupted" and dies. With

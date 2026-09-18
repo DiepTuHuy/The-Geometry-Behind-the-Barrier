@@ -93,7 +93,7 @@ def plan_cells():
         return [(rg, a) for a in acts if a in ACTS]
     return [(rg, a) for rg in REGIMES for a in ACTS]
 
-TGRID     = int(os.environ.get("TGRID", "9"))      # = GEO_TGRID cu (Green quadrature)
+TGRID     = int(os.environ.get("TGRID", "9"))      # same as GEO_TGRID (Green quadrature)
 FISHER_N  = 2048
 MICRO     = 64
 FD_EPS    = 3e-3
@@ -102,7 +102,7 @@ LAM_REL   = float(os.environ.get("LAM_REL", "1e-2"))
 CG_ITERS  = 300
 CG_TOL    = 1e-6
 POWER_ITERS = 20
-REUSE     = os.environ.get("REUSE", "1") == "1"    # doc lai profile_christoffel_*.csv
+REUSE     = os.environ.get("REUSE", "1") == "1"    # reuse profile_christoffel_*.csv instead of recomputing
 SELFTEST  = os.environ.get("SELFTEST", "1") == "1"
 ANCHOR    = os.environ.get("ANCHOR", "1") == "1"
 BUDGET_H  = float(os.environ.get("BUDGET_H", "11.0"))
@@ -604,7 +604,7 @@ def load_or_train(mode, tag, regime, act, w, want):
     need = 1 + max(max(i, j) for (i, j) in want)      # only seeds up to this index are needed
     miss = [s for s in range(need) if s not in got]
     if miss and TRAIN:
-        log(f"  [{regime}/{act}/w{w}] THIEU ckpt seed {miss} -> TRAIN "
+        log(f"  [{regime}/{act}/w{w}] missing checkpoint seeds {miss} -> TRAIN "
             f"({TRAIN_EPOCHS[mode]} epoch/mang, config = param_{mode}_v2_shard*.py)")
         for s in miss:
             t0 = time.time()
@@ -645,7 +645,7 @@ def restore_csv(path, name):
     if not os.path.exists(path):
         src = _seek_csv(name)
         if src and os.path.abspath(src) != os.path.abspath(path):
-            try: shutil.copy(src, path); log(f"[resume] khoi phuc CSV tu {src}")
+            try: shutil.copy(src, path); log(f"[resume] restored the CSV from {src}")
             except Exception as e: log(f"[resume] copy failed ({e!r}) -> starting from scratch")
     # An existing CSV must carry exactly this run's columns. Changing TGRID (or
     # LAM_REL) changes their number, so appending would produce a ragged file
@@ -681,7 +681,7 @@ def write_row(path, row):
         if new: f.write(",".join(cols) + "\n")
         f.write(",".join(str(row.get(c, "")) for c in cols) + "\n"); f.flush()
 
-# ------------------------------------------------------------------ DOC LAI FILE CHRISTOFFEL
+# ------------------------------------------------- REUSE THE CHRISTOFFEL FILE
 def load_reuse(mode):
     """profile_christoffel_{mode}.csv already holds xinorm_t*: read it, no GPU needed."""
     if not REUSE: return {}
@@ -790,7 +790,7 @@ def run_mode(mode):
                     log(f"  [{regime}/{act}/w{w}] MISSING DATA: only {len(sds)}/{NSEEDS} checkpoints "
                         f"(found seeds {got}, missing {miss}) -- 2 are needed for a pair, skipping this cell")
                     continue
-                log(f"=== {regime}/{act}/w{w}  ({len(sds)} nets, {len(left)} cap phai tinh) ===")
+                log(f"=== {regime}/{act}/w{w}  ({len(sds)} nets, {len(left)} pairs to compute) ===")
                 ref = build_net(mode, w, act, regime).to(DEVICE).eval()
                 p_ref, b_ref = _pb(ref)
                 ag, gs = perm_spec(mode, build_net(mode, w, act, regime))
@@ -877,7 +877,7 @@ def main():
         aggregate(m, p)
         if ANCHOR:
             try: anchor_check(m, p)
-            except Exception as e: log(f"[anchor] bo qua ({e!r})")
+            except Exception as e: log(f"[anchor] skipped ({e!r})")
 
 if __name__ == "__main__":
     main()

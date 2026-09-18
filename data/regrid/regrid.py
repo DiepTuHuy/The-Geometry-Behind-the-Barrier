@@ -8,7 +8,7 @@ import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 DIN, K, BASE = 784, 10, 64
 DEV = "mps" if torch.backends.mps.is_available() else "cpu"
 EVAL_N = 10000
-TG_PAPER = 41                      # TGRID_FINE trong measure_final_mlp.py
+TG_PAPER = 41                      # TGRID_FINE in measure_final_mlp.py
 
 def make_act(n): return {"relu":nn.ReLU,"gelu":nn.GELU,"tanh":nn.Tanh,
                          "swish":nn.SiLU,"softplus":nn.Softplus}[n]()
@@ -108,7 +108,7 @@ def main():
     for s in range(5):
         p = os.path.join(ck, f"{cell}_s{s}.pt")
         o = torch.load(p, map_location="cpu", weights_only=False)
-        sds.append(o["sd"])          # cau truc ckpt: {"sd":..., "acc":..., "wmove":...}
+        sds.append(o["sd"])          # checkpoint layout: {"sd":..., "acc":..., "wmove":...}
     model = NetMLP(width, act, regime).to(DEV)
     gs = {"h1":width, "h2":width}
 
@@ -120,7 +120,7 @@ def main():
     rows=[]
     for i,j in list(itertools.combinations(range(5),2))[:npairs]:
         t0=time.time()
-        perms = weight_matching(gs, sds[i], sds[j], iters=8, seed=i*13 + j)   # sao y: seed=i*13+j
+        perms = weight_matching(gs, sds[i], sds[j], iters=8, seed=i*13 + j)   # same seed convention as the measurement scripts: seed=i*13+j
         sdB   = apply_perm(sds[j], perms)
         sdA   = {k:v.to(DEV) for k,v in sds[i].items()}
         sdB   = {k:v.to(DEV) for k,v in sdB.items()}

@@ -94,7 +94,7 @@ def _first(pats):
         if h: return h[0]
     return None
 
-# ==================================================================== MODEL (sao y geo script)
+# ==================================================================== MODEL (as in the geodesic script)
 def make_act(n):
     return {"relu":nn.ReLU,"gelu":nn.GELU,"tanh":nn.Tanh,"swish":nn.SiLU,"softplus":nn.Softplus}[n]()
 
@@ -152,7 +152,7 @@ class NetCNN(nn.Module):
 def build_net(width, act, regime):
     return NetCNN(width, act, regime) if MODE == "cnn" else NetMLP(width, act, regime)
 
-# ==================================================================== PERM (sao y)
+# ==================================================================== PERM (as in the geodesic script)
 def perm_spec(model):
     if MODE == "cnn":
         ag = {"c1.weight":["g1",None,None,None],"n1.weight":["g1"],"n1.bias":["g1"],
@@ -209,7 +209,7 @@ def weight_matching(ag, gs, sdA, sdB, iters=8, seed=0):
         if moved == 0: break
     return perms
 
-# ==================================================================== DATA (CO NHAN)
+# ==================================================================== DATA (labelled)
 _CACHE = {}
 def load_data_xy():
     """Unlike the geodesic script, which needs X only: L and rho* need the labels."""
@@ -222,7 +222,7 @@ def load_data_xy():
         X = ((ds.data.float()/255.0) - 0.2860)/0.3530; X = X.unsqueeze(1); Y = ds.targets.clone()
     else:
         g = torch.Generator().manual_seed(1); X = torch.randn(20000, DIN, generator=g)
-        set_seed(1234); teach = NetMLP(32, "relu", "sp").eval()     # teacher co dinh, sao y geo script
+        set_seed(1234); teach = NetMLP(32, "relu", "sp").eval()     # fixed teacher, as in the geodesic script
         with torch.no_grad(): Y = teach(X).argmax(1)
     _CACHE["xy"] = (X, Y); return X, Y
 
@@ -250,7 +250,7 @@ def fisher_vp(m, p, b, x, v, micro):
 
 @torch.no_grad()
 def loss_acc_rho(m, p, b, x, y, micro=512):
-    """L = cross-entropy;  rho* = E||p_w(x)-e_y||_2 (Dinh nghia 2.3);  acc."""
+    """L = cross-entropy; rho* = E||p_w(x)-e_y||_2, the predictive uncertainty; acc."""
     n = x.shape[0]; sL = 0.0; sR = 0.0; sC = 0
     for i in range(0, n, micro):
         xb = x[i:i+micro]; yb = y[i:i+micro]

@@ -274,7 +274,7 @@ def fisher_vp(m, p, b, x, v, micro):
     return {k: acc[k]/B for k in acc}
 
 def rayleigh_at(m, pt, b, xf, delta, d2, micro):
-    """tra ve (q, rq) voi q = Delta^T F(pt) Delta, rq = q/||Delta||^2."""
+    """Returns (q, rq) with q = Delta^T F(pt) Delta and rq = q/||Delta||^2."""
     q = _vdot(delta, fisher_vp(m, pt, b, xf, delta, micro))
     return q, q/d2
 
@@ -405,7 +405,7 @@ def _build_index(tag):
     else:
         for rg in REGIMES:
             n = sum(1 for fn in idx if fn.startswith(rg + "_"))
-            log(f"[ckpt]   '{rg}': {n} file" + ("  -- OK" if n else "  !! THIEU"))
+            log(f"[ckpt]   '{rg}': {n} file" + ("  -- OK" if n else "  !! MISSING"))
     return idx
 
 def find_ckpt(tag, regime, act, w, s):
@@ -515,7 +515,7 @@ def load_or_train(mode, tag, regime, act, w, want):
     need = 1 + max(max(i, j) for (i, j) in want)      # only seeds up to this index are needed
     miss = [s for s in range(need) if s not in got]
     if miss and TRAIN:
-        log(f"  [{regime}/{act}/w{w}] THIEU ckpt seed {miss} -> TRAIN "
+        log(f"  [{regime}/{act}/w{w}] missing checkpoint seeds {miss} -> TRAIN "
             f"({TRAIN_EPOCHS[mode]} epoch/mang, config = param_{mode}_v2_shard*.py)")
         for s in miss:
             t0 = time.time()
@@ -551,7 +551,7 @@ def restore_csv(path, name):
     if not os.path.exists(path):
         src = _seek_csv(name)
         if src and os.path.abspath(src) != os.path.abspath(path):
-            try: shutil.copy(src, path); log(f"[resume] khoi phuc CSV tu {src}")
+            try: shutil.copy(src, path); log(f"[resume] restored the CSV from {src}")
             except Exception as e: log(f"[resume] copy failed ({e!r}) -> starting from scratch")
     # An existing CSV must carry exactly this run's columns. Changing TGRID (or
     # LAM_REL) changes their number, so appending would produce a ragged file
@@ -725,7 +725,7 @@ def aggregate(mode, path):
     ratio = g[cols[mid]]/(0.5*(g[cols[0]] + g[cols[-1]]))
     log("\n  curvature ratio, midpoint over endpoints (median per regime) -- below 1 means a dip in the middle:")
     for reg, v in ratio.groupby(g.regime).median().items():
-        log(f"    {reg:4s}  mid/end = {v:.3f}  " + ("(sap)" if v < 1 else "(phinh)"))
+        log(f"    {reg:4s}  mid/end = {v:.3f}  " + ("(dip)" if v < 1 else "(bulge)"))
 
 def main():
     modes = list(_MODE_CFG) if MODE == "all" else [MODE]
@@ -736,7 +736,7 @@ def main():
         aggregate(m, p)
         if ANCHOR:
             try: anchor_check(m, p)
-            except Exception as e: log(f"[anchor] bo qua ({e!r})")
+            except Exception as e: log(f"[anchor] skipped ({e!r})")
 
 if __name__ == "__main__":
     main()

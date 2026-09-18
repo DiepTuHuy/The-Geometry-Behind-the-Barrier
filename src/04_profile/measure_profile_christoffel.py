@@ -117,8 +117,8 @@ def plan_cells():
 def active_regimes():
     return sorted({rg for rg, _ in plan_cells()}, key=REGIMES.index)
 
-TGRID     = int(os.environ.get("TGRID", "9"))      # = GEO_TGRID cu (Green quadrature)
-FISHER_N  = 2048                                   # = GEO_BATCH cu
+TGRID     = int(os.environ.get("TGRID", "9"))      # same as GEO_TGRID (Green quadrature)
+FISHER_N  = 2048                                   # same as GEO_BATCH
 MICRO     = 64
 FD_EPS    = 3e-3                                   # unchanged from the earlier runs, deliberately
 FD_RICH   = True                                   # Richardson (4*cd(eps/2)-cd(eps))/3
@@ -331,7 +331,7 @@ def quad_scalar(m, p, b, x, delta, micro):
     return total/B
 
 def grad_quad(m, p, b, x, delta, micro):
-    """m = grad_w [ Delta^T F(w) Delta ]  (jvp long trong grad)."""
+    """m = grad_w [ Delta^T F(w) Delta ], a jvp nested inside a grad."""
     return _grad(lambda pp: quad_scalar(m, pp, b, x, delta, micro))(p)
 
 def gf_vp(m, p, b, x, v, lam, micro):
@@ -522,7 +522,7 @@ def _build_index(tag):
     else:
         for rg in active_regimes():
             n = sum(1 for fn in idx if fn.startswith(rg + "_"))
-            log(f"[ckpt]   '{rg}': {n} file" + ("  -- OK" if n else "  !! THIEU"))
+            log(f"[ckpt]   '{rg}': {n} file" + ("  -- OK" if n else "  !! MISSING"))
     return idx
 
 def find_ckpt(tag, regime, act, w, s):
@@ -632,7 +632,7 @@ def load_or_train(mode, tag, regime, act, w, want):
     need = 1 + max(max(i, j) for (i, j) in want)      # only seeds up to this index are needed
     miss = [s for s in range(need) if s not in got]
     if miss and TRAIN:
-        log(f"  [{regime}/{act}/w{w}] THIEU ckpt seed {miss} -> TRAIN "
+        log(f"  [{regime}/{act}/w{w}] missing checkpoint seeds {miss} -> TRAIN "
             f"({TRAIN_EPOCHS[mode]} epoch/mang, config = param_{mode}_v2_shard*.py)")
         for s in miss:
             t0 = time.time()
@@ -676,7 +676,7 @@ def restore_csv(path, name):
     if not os.path.exists(path):
         src = _seek_csv(name)
         if src and os.path.abspath(src) != os.path.abspath(path):
-            try: shutil.copy(src, path); log(f"[resume] khoi phuc CSV tu {src}")
+            try: shutil.copy(src, path); log(f"[resume] restored the CSV from {src}")
             except Exception as e: log(f"[resume] copy failed ({e!r}) -> starting from scratch")
     # An existing CSV must carry exactly this run's columns. Changing TGRID (or
     # LAM_REL) changes their number, so appending would produce a ragged file
@@ -768,7 +768,7 @@ def run_mode(mode):
     log(f"=== MODE={mode} SHARD={SHARD if SHARD not in (None,'') else 'het'} "
         f"cells={cells} widths={cfg['widths']} TGRID={TGRID} "
         f"lam_rel={LAM_REL:g} pairs={PAIRS} DEVICE={DEVICE} -> {out}")
-    log(f"=== con toi da {max(todo,0)} cap phai tinh "
+    log(f"=== up to {max(todo,0)} pairs still to compute "
         f"({max(todo,0)*TGRID} lan giai CG). Budget {BUDGET_H}h.")
     n_done = 0; n_skip = 0; t0 = time.time()
 
@@ -858,7 +858,7 @@ def run_mode(mode):
                 if n_done:
                     el = time.time() - t0; rate = el/n_done
                     rest = max(todo - n_done, 0)
-                    log(f"  [tien do] {n_done} cap / {el/60:.1f} phut "
+                    log(f"  [progress] {n_done} pairs / {el/60:.1f} min "
                         f"(~{rate:.0f}s per pair)  |  ~{rest} pairs left "
                         f"=> ~{rest*rate/3600:.1f}h nua")
             except Exception as e:
@@ -899,7 +899,7 @@ def main():
         aggregate(m, p)
         if ANCHOR:
             try: anchor_check(m, p)
-            except Exception as e: log(f"[anchor] bo qua ({e!r})")
+            except Exception as e: log(f"[anchor] skipped ({e!r})")
 
 if __name__ == "__main__":
     main()

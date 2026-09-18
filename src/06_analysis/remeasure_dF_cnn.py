@@ -38,7 +38,7 @@ def _first(patterns):
 
 MODULE_PATH = _first([
     os.environ.get("MODULE_PATH"),
-    "param_cnn_v2_shard*.py", "param_cnn_shard*.py",                     # cung thu muc
+    "param_cnn_v2_shard*.py", "param_cnn_shard*.py",                     # same directory
     "/kaggle/input/**/param_cnn_v2_shard*.py",
     "/kaggle/input/**/param_cnn_shard*.py",                              # either training version works
     "/content/param_cnn*shard*.py", "/content/drive/MyDrive/**/param_cnn*shard*.py",  # Colab
